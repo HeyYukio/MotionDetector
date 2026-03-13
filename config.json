@@ -1,0 +1,12 @@
+{
+    "source_type": "rtsp",
+    "source_param": "rtsp://admin:senha@192.168.1.100:554/stream",
+    "output_dir": "./output",
+    "fps": 15,
+    "detection_method": "mog2",
+    "min_area": 800,
+    "pre_record": 3,
+    "cooldown": 3,
+    "server_url": "http://meuservidor.com/upload",
+    "remove_after_upload": true
+}
