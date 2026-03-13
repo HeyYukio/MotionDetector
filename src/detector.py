@@ -23,18 +23,26 @@ class MotionDetector:
             logger.info("Detector por diferença de frames inicializado")
 
     def detect(self, frame):
-        if self.method == 'mog2':
-            return self._detect_mog2(frame)
-        else:
-            return self._detect_diff(frame)
+        """Retorna True se movimento for detectado no frame."""
+        contours = self.detect_with_contours(frame)
+        return len(contours) > 0
 
-    def _detect_diff(self, frame):
+    # método que retorna os contornos para desenho na tela
+    def detect_with_contours(self, frame):
+        """Retorna uma lista de contornos de movimento (cada contorno é um array de pontos)."""
+        if self.method == 'mog2':
+            return self._detect_mog2_contours(frame)
+        else:
+            return self._detect_diff_contours(frame)
+
+    # extrai a lógica de contornos do método _detect_diff
+    def _detect_diff_contours(self, frame):
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         gray = cv2.GaussianBlur(gray, self.blur_size, 0)
 
         if self.prev_gray is None:
             self.prev_gray = gray
-            return False
+            return []
 
         diff = cv2.absdiff(self.prev_gray, gray)
         _, thresh = cv2.threshold(diff, self.threshold, 255, cv2.THRESH_BINARY)
@@ -43,21 +51,18 @@ class MotionDetector:
 
         self.prev_gray = gray
 
-        for c in contours:
-            if cv2.contourArea(c) > self.min_area:
-                return True
-        return False
+        # Filtra por área mínima
+        valid_contours = [c for c in contours if cv2.contourArea(c) > self.min_area]
+        return valid_contours
 
-    def _detect_mog2(self, frame):
+    # extrai a lógica de contornos do método _detect_mog2
+    def _detect_mog2_contours(self, frame):
         fgmask = self.bg_subtractor.apply(frame)
-        # Remove sombras se detectShadows=True (valor 127)
         if fgmask is not None:
-            # Aplica limiar para considerar apenas movimento definitivo (branco puro)
             _, fgmask = cv2.threshold(fgmask, 250, 255, cv2.THRESH_BINARY)
             fgmask = cv2.erode(fgmask, None, iterations=1)
             fgmask = cv2.dilate(fgmask, None, iterations=2)
             contours, _ = cv2.findContours(fgmask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            for c in contours:
-                if cv2.contourArea(c) > self.min_area:
-                    return True
-        return False
+            valid_contours = [c for c in contours if cv2.contourArea(c) > self.min_area]
+            return valid_contours
+        return []

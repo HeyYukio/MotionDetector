@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+import sys
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
+
 import argparse
 import logging
 import signal
-import sys
 import threading
-import os
 
-# Importa módulos do pacote
 from sources import CameraSource, RTSPSource, DirectorySource, VideoFileSource
 from detector import MotionDetector
 from recorder import Recorder
@@ -23,7 +24,6 @@ def setup_logging(debug=False):
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         handlers=[
             logging.StreamHandler(),
-            # Opcional: logging.FileHandler("motion_recorder.log")
         ]
     )
 
@@ -55,6 +55,9 @@ def parse_arguments():
                         help="Desabilita upload mesmo se server_url estiver definido")
     parser.add_argument("--remove-after-upload", action="store_true",
                         help="Remove arquivo local após upload bem-sucedido")
+    # NOVO: argumento para preview
+    parser.add_argument("--show-preview", action="store_true",
+                        help="Mostra janela de preview com detecção de movimento em tempo real")
     parser.add_argument("--debug", action="store_true", help="Ativa logging de depuração")
     return parser.parse_args()
 
@@ -64,7 +67,6 @@ def main():
 
     # Carrega configuração de arquivo (sobrescreve com args)
     config = load_config(args.config)
-    # Atualiza args com valores do config (se não explicitamente fornecidos)
     for key, value in config.items():
         if not hasattr(args, key) or getattr(args, key) is None:
             setattr(args, key, value)
@@ -85,7 +87,7 @@ def main():
         try:
             device = int(args.source_param)
         except ValueError:
-            device = args.source_param  # pode ser /dev/video0 string
+            device = args.source_param
         source = CameraSource(device, width=args.width, height=args.height)
     elif args.source_type == 'rtsp':
         source = RTSPSource(args.source_param)
@@ -121,7 +123,7 @@ def main():
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
-    # Aplicação
+    # Aplicação (agora com show_preview)
     app = MotionRecorderApp(
         source=source,
         motion_detector=detector,
@@ -129,7 +131,8 @@ def main():
         uploader=uploader,
         cooldown_sec=args.cooldown,
         min_motion_frames=args.min_motion_frames,
-        stop_event=stop_event
+        stop_event=stop_event,
+        show_preview=args.show_preview   # NOVO
     )
     app.run()
 
