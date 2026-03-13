@@ -9,7 +9,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 class Recorder:
-    def __init__(self, output_dir='./videos', fps=20, codec='mp4v',
+    def __init__(self, output_dir='../videos', fps=20, codec='mp4v',
                  pre_record_seconds=2, max_queue_size=60):
         self.output_dir = output_dir
         os.makedirs(output_dir, exist_ok=True)

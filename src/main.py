@@ -38,7 +38,7 @@ def parse_arguments():
     parser.add_argument("--width", type=int, default=640, help="Largura do frame (câmera)")
     parser.add_argument("--height", type=int, default=480, help="Altura do frame (câmera)")
     parser.add_argument("--fps", type=int, default=20, help="FPS de gravação")
-    parser.add_argument("--output-dir", type=str, default="./videos", help="Diretório para salvar vídeos")
+    parser.add_argument("--output-dir", type=str, default="../videos", help="Diretório para salvar vídeos")
     parser.add_argument("--detection-method", choices=['diff', 'mog2'], default='diff',
                         help="Método de detecção de movimento")
     parser.add_argument("--threshold", type=int, default=25, help="Limiar de diferença (diff)")
