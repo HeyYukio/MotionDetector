@@ -55,7 +55,7 @@ def parse_arguments():
                         help="Desabilita upload mesmo se server_url estiver definido")
     parser.add_argument("--remove-after-upload", action="store_true",
                         help="Remove arquivo local após upload bem-sucedido")
-    # NOVO: argumento para preview
+
     parser.add_argument("--show-preview", action="store_true",
                         help="Mostra janela de preview com detecção de movimento em tempo real")
     parser.add_argument("--debug", action="store_true", help="Ativa logging de depuração")
@@ -123,7 +123,7 @@ def main():
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
-    # Aplicação (agora com show_preview)
+    # Aplicação 
     app = MotionRecorderApp(
         source=source,
         motion_detector=detector,
@@ -132,7 +132,7 @@ def main():
         cooldown_sec=args.cooldown,
         min_motion_frames=args.min_motion_frames,
         stop_event=stop_event,
-        show_preview=args.show_preview   # NOVO
+        show_preview=args.show_preview  
     )
     app.run()
 

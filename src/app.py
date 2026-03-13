@@ -17,7 +17,7 @@ class MotionRecorderApp:
         self.cooldown = cooldown_sec
         self.min_motion_frames = min_motion_frames
         self.stop_event = stop_event or threading.Event()
-        self.show_preview = show_preview  # NOVO
+        self.show_preview = show_preview
 
         if uploader:
             self.recorder.on_video_finished = self.uploader.upload
@@ -26,7 +26,7 @@ class MotionRecorderApp:
         self.no_motion_start = None
         self.recording = False
 
-        # NOVO: para controle da janela de preview
+        # para controle da janela de preview
         self.preview_window_name = "Motion Recorder Preview"
 
     def run(self):
@@ -42,7 +42,7 @@ class MotionRecorderApp:
                 time.sleep(0.5)
                 continue
 
-            # NOVO: detector agora retorna contornos
+            # detector agora retorna contornos
             contours = self.detector.detect_with_contours(frame)
             motion = len(contours) > 0
 
@@ -68,7 +68,7 @@ class MotionRecorderApp:
             if self.recording:
                 self.recorder.add_frame(frame)
 
-            # NOVO: desenha preview se ativado
+            # desenha preview se ativado
             if self.show_preview:
                 self._draw_preview(frame, motion, contours)
                 cv2.imshow(self.preview_window_name, frame)
