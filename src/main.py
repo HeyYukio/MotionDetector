@@ -9,6 +9,7 @@ import argparse
 import logging
 import signal
 import threading
+from types import SimpleNamespace
 
 from sources import CameraSource, RTSPSource, DirectorySource, VideoFileSource
 from detector import MotionDetector
@@ -22,9 +23,7 @@ def setup_logging(debug=False):
     logging.basicConfig(
         level=level,
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.StreamHandler(),
-        ]
+        handlers=[logging.StreamHandler()]
     )
 
 def parse_arguments():
@@ -55,23 +54,49 @@ def parse_arguments():
                         help="Desabilita upload mesmo se server_url estiver definido")
     parser.add_argument("--remove-after-upload", action="store_true",
                         help="Remove arquivo local após upload bem-sucedido")
-
     parser.add_argument("--show-preview", action="store_true",
                         help="Mostra janela de preview com detecção de movimento em tempo real")
     parser.add_argument("--debug", action="store_true", help="Ativa logging de depuração")
-    return parser.parse_args()
+
+    # Extrai os valores padrão
+    defaults = {action.dest: action.default for action in parser._actions 
+                if action.default is not argparse.SUPPRESS}
+    args = parser.parse_args()
+    return args, defaults
 
 def main():
-    args = parse_arguments()
+    args, defaults = parse_arguments()
     setup_logging(args.debug)
 
-    # Carrega configuração de arquivo (sobrescreve com args)
-    config = load_config(args.config)
-    for key, value in config.items():
-        if not hasattr(args, key) or getattr(args, key) is None:
-            setattr(args, key, value)
+    # --- DEBUG: Informações sobre o arquivo de configuração ---
+    config_path = args.config
+    abs_config_path = os.path.abspath(config_path)
+    print("\n[DEBUG] Caminho do arquivo de configuração:", abs_config_path)
+    print("[DEBUG] Arquivo existe?", os.path.exists(abs_config_path))
 
-    # Decide se faz upload
+    # Carrega configuração do JSON
+    config = load_config(args.config)
+    print("[DEBUG] Configuração carregada do JSON:", config)
+
+    # Converte args para dicionário
+    args_dict = vars(args)
+    print("[DEBUG] Argumentos da linha de comando (completos, incluindo defaults):", args_dict)
+
+    # Filtra apenas argumentos explicitamente fornecidos (diferentes dos defaults)
+    explicit_args = {k: v for k, v in args_dict.items() if v != defaults.get(k)}
+    print("[DEBUG] Argumentos explicitamente fornecidos (diferentes dos defaults):", explicit_args)
+
+    # Mescla na ordem: defaults <- JSON <- args explícitos
+    final_dict = defaults.copy()
+    final_dict.update(config)          # JSON sobrescreve defaults
+    final_dict.update(explicit_args)    # args explícitos sobrescrevem JSON
+
+    print("[DEBUG] Dicionário final após mesclagem:", final_dict)
+
+    # Converte para um objeto acessível por atributos
+    args = SimpleNamespace(**final_dict)
+
+    # --- Decisão sobre upload ---
     uploader = None
     if args.server_url and not args.no_upload:
         try:
@@ -81,7 +106,7 @@ def main():
             sys.exit(1)
         uploader = Uploader(args.server_url, remove_after_upload=args.remove_after_upload)
 
-    # Cria fonte
+    # --- Cria fonte ---
     source = None
     if args.source_type == 'camera':
         try:
@@ -99,21 +124,21 @@ def main():
         logging.error("Tipo de fonte inválido")
         sys.exit(1)
 
-    # Detector
+    # --- Detector ---
     detector = MotionDetector(
         method=args.detection_method,
         threshold=args.threshold,
         min_area=args.min_area
     )
 
-    # Recorder
+    # --- Recorder ---
     recorder = Recorder(
         output_dir=args.output_dir,
         fps=args.fps,
         pre_record_seconds=args.pre_record
     )
 
-    # Evento de parada para sinais
+    # --- Evento de parada para sinais ---
     stop_event = threading.Event()
 
     def signal_handler(signum, frame):
@@ -123,7 +148,7 @@ def main():
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
-    # Aplicação 
+    # --- Aplicação ---
     app = MotionRecorderApp(
         source=source,
         motion_detector=detector,
@@ -132,7 +157,7 @@ def main():
         cooldown_sec=args.cooldown,
         min_motion_frames=args.min_motion_frames,
         stop_event=stop_event,
-        show_preview=args.show_preview  
+        show_preview=args.show_preview
     )
     app.run()
 
