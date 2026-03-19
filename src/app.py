@@ -2,14 +2,15 @@ import time
 import threading
 import logging
 from datetime import datetime
-import cv2  # NOVO: import necessário para desenho
+import cv2
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
 class MotionRecorderApp:
     def __init__(self, source, motion_detector, recorder, uploader=None,
                  cooldown_sec=2.0, min_motion_frames=5, stop_event=None,
-                 show_preview=False):  # NOVO: parâmetro show_preview
+                 show_preview=False, roi_polygons_normalized=None):
         self.source = source
         self.detector = motion_detector
         self.recorder = recorder
@@ -18,6 +19,7 @@ class MotionRecorderApp:
         self.min_motion_frames = min_motion_frames
         self.stop_event = stop_event or threading.Event()
         self.show_preview = show_preview
+        self.roi_polygons_normalized = roi_polygons_normalized or []
 
         if uploader:
             self.recorder.on_video_finished = self.uploader.upload
@@ -26,8 +28,22 @@ class MotionRecorderApp:
         self.no_motion_start = None
         self.recording = False
 
-        # para controle da janela de preview
+        # Para controle da janela de preview
         self.preview_window_name = "Motion Recorder Preview"
+        # Cache para polígonos absolutos (atualizado a cada frame)
+        self.roi_polygons_absolute = []
+        self.frame_shape = None
+
+    def _update_roi_absolute(self, frame_shape):
+        """Converte ROIs normalizadas para absolutas com base no shape do frame."""
+        if self.frame_shape == frame_shape:
+            return
+        self.frame_shape = frame_shape
+        h, w = frame_shape[:2]
+        self.roi_polygons_absolute = []
+        for poly_norm in self.roi_polygons_normalized:
+            abs_poly = np.array([(int(x * w), int(y * h)) for (x, y) in poly_norm], dtype=np.int32)
+            self.roi_polygons_absolute.append(abs_poly)
 
     def run(self):
         logger.info("Iniciando monitoramento. Pressione Ctrl+C para parar.")
@@ -42,11 +58,15 @@ class MotionRecorderApp:
                 time.sleep(0.5)
                 continue
 
-            # detector agora retorna contornos
+            # Atualiza polígonos absolutos para desenho
+            if self.show_preview:
+                self._update_roi_absolute(frame.shape)
+
+            # detector agora retorna contornos (já filtrados por ROI)
             contours = self.detector.detect_with_contours(frame)
             motion = len(contours) > 0
 
-            # Lógica de estado (inalterada)
+            # Lógica de estado
             if motion:
                 self.motion_counter += 1
                 self.no_motion_start = None
@@ -68,7 +88,7 @@ class MotionRecorderApp:
             if self.recording:
                 self.recorder.add_frame(frame)
 
-            # desenha preview se ativado
+            # Desenha preview se ativado
             if self.show_preview:
                 self._draw_preview(frame, motion, contours)
                 cv2.imshow(self.preview_window_name, frame)
@@ -92,6 +112,10 @@ class MotionRecorderApp:
     def _draw_preview(self, frame, motion, contours):
         # Desenha contornos verdes onde há movimento
         cv2.drawContours(frame, contours, -1, (0, 255, 0), 2)
+
+        # Desenha ROIs (polígonos amarelos)
+        for poly in self.roi_polygons_absolute:
+            cv2.polylines(frame, [poly], isClosed=True, color=(0, 255, 255), thickness=2)
 
         # Status da gravação
         status = "GRAVANDO" if self.recording else "ESPERANDO"

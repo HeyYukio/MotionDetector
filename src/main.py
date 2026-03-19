@@ -16,7 +16,7 @@ from detector import MotionDetector
 from recorder import Recorder
 from uploader import Uploader
 from app import MotionRecorderApp
-from config import load_config
+from config import load_config, load_roi
 
 def setup_logging(debug=False):
     level = logging.DEBUG if debug else logging.INFO
@@ -38,7 +38,7 @@ def parse_arguments():
     parser.add_argument("--height", type=int, default=480, help="Altura do frame (câmera)")
     parser.add_argument("--fps", type=int, default=20, help="FPS de gravação")
     parser.add_argument("--output-dir", type=str, default="../videos", help="Diretório para salvar vídeos")
-    parser.add_argument("--detection-method", choices=['diff', 'mog2'], default='diff',
+    parser.add_argument("--detection-method", choices=['diff', 'mog2'], default='mog2',
                         help="Método de detecção de movimento")
     parser.add_argument("--threshold", type=int, default=25, help="Limiar de diferença (diff)")
     parser.add_argument("--min-area", type=int, default=500, help="Área mínima de movimento")
@@ -56,6 +56,8 @@ def parse_arguments():
                         help="Remove arquivo local após upload bem-sucedido")
     parser.add_argument("--show-preview", action="store_true",
                         help="Mostra janela de preview com detecção de movimento em tempo real")
+    parser.add_argument("--roi-json", type=str, default=None,
+                        help="Arquivo JSON contendo polígonos de áreas de interesse (ROIs)")
     parser.add_argument("--debug", action="store_true", help="Ativa logging de depuração")
 
     # Extrai os valores padrão
@@ -68,35 +70,31 @@ def main():
     args, defaults = parse_arguments()
     setup_logging(args.debug)
 
-    # --- DEBUG: Informações sobre o arquivo de configuração ---
-    config_path = args.config
-    abs_config_path = os.path.abspath(config_path)
-    print("\n[DEBUG] Caminho do arquivo de configuração:", abs_config_path)
-    print("[DEBUG] Arquivo existe?", os.path.exists(abs_config_path))
-
     # Carrega configuração do JSON
     config = load_config(args.config)
-    print("[DEBUG] Configuração carregada do JSON:", config)
 
     # Converte args para dicionário
     args_dict = vars(args)
-    print("[DEBUG] Argumentos da linha de comando (completos, incluindo defaults):", args_dict)
 
     # Filtra apenas argumentos explicitamente fornecidos (diferentes dos defaults)
     explicit_args = {k: v for k, v in args_dict.items() if v != defaults.get(k)}
-    print("[DEBUG] Argumentos explicitamente fornecidos (diferentes dos defaults):", explicit_args)
 
     # Mescla na ordem: defaults <- JSON <- args explícitos
     final_dict = defaults.copy()
     final_dict.update(config)          # JSON sobrescreve defaults
     final_dict.update(explicit_args)    # args explícitos sobrescrevem JSON
 
-    print("[DEBUG] Dicionário final após mesclagem:", final_dict)
-
     # Converte para um objeto acessível por atributos
     args = SimpleNamespace(**final_dict)
 
-    # --- Decisão sobre upload ---
+    # Carrega ROIs se especificado
+    roi_polygons = None
+    if args.roi_json:
+        roi_polygons = load_roi(args.roi_json)
+        if roi_polygons:
+            logging.info(f"Carregadas {len(roi_polygons)} ROIs do arquivo {args.roi_json}")
+
+    # Decisão sobre upload
     uploader = None
     if args.server_url and not args.no_upload:
         try:
@@ -106,7 +104,7 @@ def main():
             sys.exit(1)
         uploader = Uploader(args.server_url, remove_after_upload=args.remove_after_upload)
 
-    # --- Cria fonte ---
+    # Cria fonte
     source = None
     if args.source_type == 'camera':
         try:
@@ -124,21 +122,22 @@ def main():
         logging.error("Tipo de fonte inválido")
         sys.exit(1)
 
-    # --- Detector ---
+    # Detector com ROIs
     detector = MotionDetector(
         method=args.detection_method,
         threshold=args.threshold,
-        min_area=args.min_area
+        min_area=args.min_area,
+        roi_polygons_normalized=roi_polygons
     )
 
-    # --- Recorder ---
+    # Recorder
     recorder = Recorder(
         output_dir=args.output_dir,
         fps=args.fps,
         pre_record_seconds=args.pre_record
     )
 
-    # --- Evento de parada para sinais ---
+    # Evento de parada para sinais
     stop_event = threading.Event()
 
     def signal_handler(signum, frame):
@@ -148,7 +147,7 @@ def main():
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
-    # --- Aplicação ---
+    # Aplicação 
     app = MotionRecorderApp(
         source=source,
         motion_detector=detector,
@@ -157,7 +156,8 @@ def main():
         cooldown_sec=args.cooldown,
         min_motion_frames=args.min_motion_frames,
         stop_event=stop_event,
-        show_preview=args.show_preview
+        show_preview=args.show_preview,
+        roi_polygons_normalized=roi_polygons  # Passa para desenho no preview
     )
     app.run()
 
