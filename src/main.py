@@ -11,7 +11,7 @@ import signal
 import threading
 from types import SimpleNamespace
 
-from sources import CameraSource, RTSPSource, DirectorySource, VideoFileSource
+from sources import CameraSource, RTSPSource, DirectorySource, VideoFileSource, ThreadedFrameSource
 from detector import MotionDetector
 from recorder import Recorder
 from uploader import Uploader
@@ -60,7 +60,6 @@ def parse_arguments():
                         help="Arquivo JSON contendo polígonos de áreas de interesse (ROIs)")
     parser.add_argument("--debug", action="store_true", help="Ativa logging de depuração")
 
-    # Extrai os valores padrão
     defaults = {action.dest: action.default for action in parser._actions 
                 if action.default is not argparse.SUPPRESS}
     args = parser.parse_args()
@@ -70,31 +69,23 @@ def main():
     args, defaults = parse_arguments()
     setup_logging(args.debug)
 
-    # Carrega configuração do JSON
     config = load_config(args.config)
 
-    # Converte args para dicionário
     args_dict = vars(args)
-
-    # Filtra apenas argumentos explicitamente fornecidos (diferentes dos defaults)
     explicit_args = {k: v for k, v in args_dict.items() if v != defaults.get(k)}
 
-    # Mescla na ordem: defaults <- JSON <- args explícitos
     final_dict = defaults.copy()
-    final_dict.update(config)          # JSON sobrescreve defaults
-    final_dict.update(explicit_args)    # args explícitos sobrescrevem JSON
+    final_dict.update(config)
+    final_dict.update(explicit_args)
 
-    # Converte para um objeto acessível por atributos
     args = SimpleNamespace(**final_dict)
 
-    # Carrega ROIs se especificado
     roi_polygons = None
     if args.roi_json:
         roi_polygons = load_roi(args.roi_json)
         if roi_polygons:
             logging.info(f"Carregadas {len(roi_polygons)} ROIs do arquivo {args.roi_json}")
 
-    # Decisão sobre upload
     uploader = None
     if args.server_url and not args.no_upload:
         try:
@@ -104,7 +95,7 @@ def main():
             sys.exit(1)
         uploader = Uploader(args.server_url, remove_after_upload=args.remove_after_upload)
 
-    # Cria fonte
+    # Cria a fonte de acordo com o tipo
     source = None
     if args.source_type == 'camera':
         try:
@@ -122,7 +113,10 @@ def main():
         logging.error("Tipo de fonte inválido")
         sys.exit(1)
 
-    # Detector com ROIs
+    # Envolve a fonte com ThreadedFrameSource para não bloquear o loop principal
+    if source is not None:
+        source = ThreadedFrameSource(source, timeout_sec=2.0)
+
     detector = MotionDetector(
         method=args.detection_method,
         threshold=args.threshold,
@@ -130,14 +124,12 @@ def main():
         roi_polygons_normalized=roi_polygons
     )
 
-    # Recorder
     recorder = Recorder(
         output_dir=args.output_dir,
         fps=args.fps,
         pre_record_seconds=args.pre_record
     )
 
-    # Evento de parada para sinais
     stop_event = threading.Event()
 
     def signal_handler(signum, frame):
@@ -147,7 +139,6 @@ def main():
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
-    # Aplicação 
     app = MotionRecorderApp(
         source=source,
         motion_detector=detector,
@@ -157,9 +148,15 @@ def main():
         min_motion_frames=args.min_motion_frames,
         stop_event=stop_event,
         show_preview=args.show_preview,
-        roi_polygons_normalized=roi_polygons  # Passa para desenho no preview
+        roi_polygons_normalized=roi_polygons
     )
-    app.run()
+
+    try:
+        app.run()
+    finally:
+        # Garante que o recorder seja encerrado corretamente
+        if recorder is not None and hasattr(recorder, 'shutdown'):
+            recorder.shutdown()
 
 if __name__ == "__main__":
     main()

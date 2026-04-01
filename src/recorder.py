@@ -22,11 +22,18 @@ class Recorder:
         self.buffer_size = int(fps * pre_record_seconds)
         self.frame_buffer = collections.deque(maxlen=self.buffer_size)
         self.frame_queue = queue.Queue(maxsize=max_queue_size)
-        self.thread = threading.Thread(target=self._record_worker, daemon=True)
+
+        # Sentinela para desligamento
+        self._shutdown_sentinel = object()
+        self._shutdown_started = False
+
+        self.thread = threading.Thread(target=self._record_worker, daemon=False)
         self.thread.start()
-        self.on_video_finished = None  # callback quando vídeo é finalizado
-        self.lock = threading.Lock()   # para acesso ao buffer
-        self.end_timestamp = None      # armazena timestamp do fim
+
+        self.on_video_finished = None
+        self.lock = threading.Lock()
+        self.end_timestamp = None
+
         logger.info(f"Recorder inicializado: {output_dir}, pré-gravação={pre_record_seconds}s")
 
     def start_recording(self):
@@ -35,44 +42,44 @@ class Recorder:
                 self.recording = True
                 start_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 self.filename = os.path.join(self.output_dir, f"clip_{start_timestamp}.mp4")
-                self.end_timestamp = None  # reseta timestamp de fim
-                # O writer será criado no primeiro frame após o buffer
-                # Primeiro, coloca os frames do buffer na fila
+                self.end_timestamp = None
                 logger.debug(f"Iniciando gravação: {self.filename} (buffer: {len(self.frame_buffer)} frames)")
                 buffer_copy = list(self.frame_buffer)
                 for bframe in buffer_copy:
                     self.frame_queue.put(bframe)
 
     def add_frame(self, frame):
-        """Adiciona frame ao buffer e, se gravando, à fila de gravação."""
         with self.lock:
-            # Sempre adiciona ao buffer (para pré-gravação)
             self.frame_buffer.append(frame.copy())
             if self.recording:
                 if self.writer is None:
-                    # Cria writer com as dimensões do primeiro frame (do buffer)
                     h, w = frame.shape[:2]
                     self.writer = cv2.VideoWriter(self.filename, self.fourcc, self.fps, (w, h))
-                # Coloca o frame atual na fila
                 self.frame_queue.put(frame.copy())
 
     def stop_recording(self):
         with self.lock:
             if self.recording:
                 self.recording = False
-                # Captura o timestamp exato do fim da gravação
                 self.end_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 logger.debug("Parando gravação")
-                self.frame_queue.put(None)  # sinaliza fim
+                self.frame_queue.put(None)
+
+    def shutdown(self):
+        """Encerra a thread do gravador aguardando a conclusão de todas as operações."""
+        if not self._shutdown_started:
+            self._shutdown_started = True
+            self.frame_queue.put(self._shutdown_sentinel)
+            self.thread.join()
+            logger.debug("Recorder encerrado.")
 
     def _record_worker(self):
         while True:
-            frame = self.frame_queue.get()
-            if frame is None:
+            item = self.frame_queue.get()
+            if item is None:
                 if self.writer:
                     self.writer.release()
                     self.writer = None
-                    # Renomeia o arquivo para incluir o timestamp de fim, se disponível
                     if self.end_timestamp:
                         base, ext = os.path.splitext(self.filename)
                         new_filename = f"{base}_{self.end_timestamp}{ext}"
@@ -88,5 +95,13 @@ class Recorder:
                     if self.on_video_finished:
                         self.on_video_finished(final_filename)
                 continue
-            if self.writer:
-                self.writer.write(frame)
+
+            elif item is self._shutdown_sentinel:
+                if self.writer:
+                    self.writer.release()
+                    self.writer = None
+                break
+
+            else:
+                if self.writer:
+                    self.writer.write(item)

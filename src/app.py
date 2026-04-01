@@ -28,14 +28,11 @@ class MotionRecorderApp:
         self.no_motion_start = None
         self.recording = False
 
-        # Para controle da janela de preview
         self.preview_window_name = "Motion Recorder Preview"
-        # Cache para polígonos absolutos (atualizado a cada frame)
         self.roi_polygons_absolute = []
         self.frame_shape = None
 
     def _update_roi_absolute(self, frame_shape):
-        """Converte ROIs normalizadas para absolutas com base no shape do frame."""
         if self.frame_shape == frame_shape:
             return
         self.frame_shape = frame_shape
@@ -54,19 +51,16 @@ class MotionRecorderApp:
         while not self.stop_event.is_set():
             frame = self.source.get_frame()
             if frame is None:
-                logger.warning("Fonte não forneceu frame (fim da stream?)")
-                time.sleep(0.5)
+                # Timeout ou fim da stream: espera um pouco e verifica stop_event novamente
+                self.stop_event.wait(0.05)
                 continue
 
-            # Atualiza polígonos absolutos para desenho
             if self.show_preview:
                 self._update_roi_absolute(frame.shape)
 
-            # detector agora retorna contornos (já filtrados por ROI)
             contours = self.detector.detect_with_contours(frame)
             motion = len(contours) > 0
 
-            # Lógica de estado
             if motion:
                 self.motion_counter += 1
                 self.no_motion_start = None
@@ -88,7 +82,6 @@ class MotionRecorderApp:
             if self.recording:
                 self.recorder.add_frame(frame)
 
-            # Desenha preview se ativado
             if self.show_preview:
                 self._draw_preview(frame, motion, contours)
                 cv2.imshow(self.preview_window_name, frame)
@@ -108,30 +101,18 @@ class MotionRecorderApp:
             cv2.destroyAllWindows()
         logger.info("Recursos liberados. Programa encerrado.")
 
-    # método auxiliar para desenhar informações no frame
     def _draw_preview(self, frame, motion, contours):
-        # Desenha contornos verdes onde há movimento
         cv2.drawContours(frame, contours, -1, (0, 255, 0), 2)
-
-        # Desenha ROIs (polígonos amarelos)
         for poly in self.roi_polygons_absolute:
             cv2.polylines(frame, [poly], isClosed=True, color=(0, 255, 255), thickness=2)
-
-        # Status da gravação
         status = "GRAVANDO" if self.recording else "ESPERANDO"
-        color = (0, 0, 255) if self.recording else (255, 255, 255)  # vermelho se gravando
+        color = (0, 0, 255) if self.recording else (255, 255, 255)
         cv2.putText(frame, f"Status: {status}", (10, 30),
                     cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
-
-        # Informação de movimento
         motion_text = f"Movimento: {'SIM' if motion else 'NAO'} ({len(contours)} areas)"
         cv2.putText(frame, motion_text, (10, 60),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-
-        # Contador de frames com movimento
         cv2.putText(frame, f"Contador: {self.motion_counter}", (10, 90),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-
-        # Instrução
         cv2.putText(frame, "Pressione 'q' para sair", (10, frame.shape[0] - 10),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (100, 100, 255), 1)

@@ -2,6 +2,8 @@ import cv2
 import os
 import time
 import logging
+import threading
+import queue
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +55,7 @@ class RTSPSource(FrameSource):
             time.sleep(wait)
             self._connect()
             self.reconnect_count += 1
-            return None  # tenta novamente no próximo ciclo
+            return None
 
         ret, frame = self.cap.read()
         if not ret:
@@ -61,7 +63,7 @@ class RTSPSource(FrameSource):
             self.cap.release()
             self.cap = None
             return None
-        self.reconnect_count = 0  # reset ao conseguir frame
+        self.reconnect_count = 0
         return frame
 
     def release(self):
@@ -94,3 +96,44 @@ class VideoFileSource(FrameSource):
 
     def release(self):
         self.cap.release()
+
+
+class ThreadedFrameSource(FrameSource):
+    """Wrapper que executa a captura em uma thread separada e fornece frames via fila."""
+    def __init__(self, source, max_queue_size=30, timeout_sec=2.0):
+        self.source = source
+        self.timeout_sec = timeout_sec
+        self.queue = queue.Queue(maxsize=max_queue_size)
+        self.running = True
+        self.thread = threading.Thread(target=self._capture_worker, daemon=True)
+        self.thread.start()
+        logger.info("ThreadedFrameSource iniciado")
+
+    def _capture_worker(self):
+        while self.running:
+            frame = self.source.get_frame()
+            if frame is None:
+                self.queue.put(None)
+                break
+            try:
+                self.queue.put(frame, timeout=1.0)
+            except queue.Full:
+                # Se a fila estiver cheia, descarta o frame mais antigo
+                try:
+                    self.queue.get_nowait()
+                except queue.Empty:
+                    pass
+                self.queue.put(frame)
+
+    def get_frame(self):
+        """Retorna um frame ou None se não houver dentro do timeout."""
+        try:
+            return self.queue.get(timeout=self.timeout_sec)
+        except queue.Empty:
+            return None
+
+    def release(self):
+        self.running = False
+        self.source.release()
+        self.thread.join(timeout=2.0)
+        logger.info("ThreadedFrameSource liberado")
