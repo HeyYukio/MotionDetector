@@ -26,14 +26,16 @@ class Recorder:
         self.thread.start()
         self.on_video_finished = None  # callback quando vídeo é finalizado
         self.lock = threading.Lock()   # para acesso ao buffer
+        self.end_timestamp = None      # armazena timestamp do fim
         logger.info(f"Recorder inicializado: {output_dir}, pré-gravação={pre_record_seconds}s")
 
     def start_recording(self):
         with self.lock:
             if not self.recording:
                 self.recording = True
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                self.filename = os.path.join(self.output_dir, f"clip_{timestamp}.mp4")
+                start_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                self.filename = os.path.join(self.output_dir, f"clip_{start_timestamp}.mp4")
+                self.end_timestamp = None  # reseta timestamp de fim
                 # O writer será criado no primeiro frame após o buffer
                 # Primeiro, coloca os frames do buffer na fila
                 logger.debug(f"Iniciando gravação: {self.filename} (buffer: {len(self.frame_buffer)} frames)")
@@ -51,17 +53,15 @@ class Recorder:
                     # Cria writer com as dimensões do primeiro frame (do buffer)
                     h, w = frame.shape[:2]
                     self.writer = cv2.VideoWriter(self.filename, self.fourcc, self.fps, (w, h))
-                # Coloca o frame atual na fila (já foi adicionado ao buffer? Não, mas queremos o frame atual)
-                # O frame atual já está no buffer, mas queremos enviá-lo também.
-                # Para evitar duplicação, podemos colocar o frame atual separadamente.
-                # Melhor: colocar o frame atual diretamente na fila, e o buffer é só para pré.
-                # Então:
+                # Coloca o frame atual na fila
                 self.frame_queue.put(frame.copy())
 
     def stop_recording(self):
         with self.lock:
             if self.recording:
                 self.recording = False
+                # Captura o timestamp exato do fim da gravação
+                self.end_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 logger.debug("Parando gravação")
                 self.frame_queue.put(None)  # sinaliza fim
 
@@ -72,8 +72,21 @@ class Recorder:
                 if self.writer:
                     self.writer.release()
                     self.writer = None
+                    # Renomeia o arquivo para incluir o timestamp de fim, se disponível
+                    if self.end_timestamp:
+                        base, ext = os.path.splitext(self.filename)
+                        new_filename = f"{base}_{self.end_timestamp}{ext}"
+                        try:
+                            os.rename(self.filename, new_filename)
+                            final_filename = new_filename
+                            logger.debug(f"Vídeo renomeado para: {final_filename}")
+                        except OSError as e:
+                            logger.error(f"Erro ao renomear vídeo: {e}")
+                            final_filename = self.filename
+                    else:
+                        final_filename = self.filename
                     if self.on_video_finished:
-                        self.on_video_finished(self.filename)
+                        self.on_video_finished(final_filename)
                 continue
             if self.writer:
                 self.writer.write(frame)
