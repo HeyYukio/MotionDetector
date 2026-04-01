@@ -1,3 +1,6 @@
 __pycache__
 .vscode
 videos
+.env.development
+.env.production
+.env
