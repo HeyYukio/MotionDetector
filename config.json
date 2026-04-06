@@ -16,5 +16,7 @@
     "remove_after_upload": false,
     "show_preview": false,
     "roi_json": null,
-    "debug": false
+    "debug": false,
+    "max_storage_mb": 1000,
+    "storage_policy": "stop"
 }
