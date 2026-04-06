@@ -59,6 +59,12 @@ def parse_arguments():
     parser.add_argument("--roi-json", type=str, default=None,
                         help="Arquivo JSON contendo polígonos de áreas de interesse (ROIs)")
     parser.add_argument("--debug", action="store_true", help="Ativa logging de depuração")
+    
+    # Novos argumentos para limite de armazenamento
+    parser.add_argument("--max-storage-mb", type=int, default=0,
+                        help="Limite máximo de armazenamento em MB (0 = sem limite)")
+    parser.add_argument("--storage-policy", choices=['stop', 'delete_oldest'], default='stop',
+                        help="Política quando o limite é atingido: 'stop' (para de gravar) ou 'delete_oldest' (apaga vídeos mais antigos)")
 
     defaults = {action.dest: action.default for action in parser._actions 
                 if action.default is not argparse.SUPPRESS}
@@ -124,10 +130,15 @@ def main():
         roi_polygons_normalized=roi_polygons
     )
 
+    # Converte limite de MB para bytes
+    max_storage_bytes = args.max_storage_mb * 1024 * 1024 if args.max_storage_mb > 0 else None
+
     recorder = Recorder(
         output_dir=args.output_dir,
         fps=args.fps,
-        pre_record_seconds=args.pre_record
+        pre_record_seconds=args.pre_record,
+        max_storage_bytes=max_storage_bytes,
+        storage_policy=args.storage_policy
     )
 
     stop_event = threading.Event()
