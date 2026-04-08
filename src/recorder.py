@@ -4,7 +4,7 @@ import threading
 import queue
 import collections
 import glob
-from datetime import datetime
+from datetime import datetime, timezone
 import logging
 
 logger = logging.getLogger(__name__)
@@ -118,7 +118,8 @@ class Recorder:
                 if not self._check_storage_limit():
                     return False
                 self.recording = True
-                start_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                # Timestamp UTC para início da gravação
+                start_timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
                 self.filename = os.path.join(self.output_dir, f"clip_{start_timestamp}.mp4")
                 self.end_timestamp = None
                 logger.debug(f"Iniciando gravação: {self.filename} (buffer: {len(self.frame_buffer)} frames)")
@@ -141,7 +142,8 @@ class Recorder:
         with self.lock:
             if self.recording:
                 self.recording = False
-                self.end_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                # Timestamp UTC para fim da gravação
+                self.end_timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
                 logger.debug("Parando gravação")
                 self.frame_queue.put(None)
 
