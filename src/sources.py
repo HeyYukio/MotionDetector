@@ -1,3 +1,4 @@
+# sources.py
 import cv2
 import os
 import time
@@ -21,17 +22,29 @@ class FrameSource:
 class CameraSource(FrameSource):
     is_live = True
 
-    def __init__(self, src=0, width=640, height=480, fps=None):
+    def __init__(self, src=0, width=640, height=480, fps=None, codec=None):
         self.cap = cv2.VideoCapture(src)
+        if not self.cap.isOpened():
+            raise IOError(f"Não foi possível abrir a câmera {src}")
+
+        # Tenta definir o codec apenas se fornecido (não None)
+        if codec is not None:
+            fourcc = cv2.VideoWriter_fourcc(*codec)
+            if self.cap.set(cv2.CAP_PROP_FOURCC, fourcc):
+                logger.info(f"Codec da câmera definido para: {codec}")
+            else:
+                logger.warning(f"Não foi possível definir o codec para {codec}. Usando o padrão da câmera.")
+
+        # Define resolução e FPS
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
         if fps is not None:
             self.cap.set(cv2.CAP_PROP_FPS, fps)
+
         actual_fps = self.cap.get(cv2.CAP_PROP_FPS)
-        if actual_fps > 0:
-            logger.info(f"CameraSource iniciada: {src} ({width}x{height}) @ {actual_fps:.2f} fps")
-        else:
-            logger.info(f"CameraSource iniciada: {src} ({width}x{height})")
+        actual_width = self.cap.get(cv2.CAP_PROP_FRAME_WIDTH)
+        actual_height = self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
+        logger.info(f"CameraSource iniciada: {src} ({actual_width}x{actual_height}) @ {actual_fps:.2f} fps")
 
     def get_frame(self):
         ret, frame = self.cap.read()

@@ -8,7 +8,6 @@ import os
 # SUPRESSÃO DE MENSAGENS DO QT (DEVE VIR ANTES DE QUALQUER IMPORTAÇÃO DO OPENCV)
 # ------------------------------------------------------------
 
-# 1. Filtro de stderr em nível Python
 class FilteredStderr:
     """Redireciona stderr, filtrando mensagens indesejadas."""
     def __init__(self, original_stderr, filter_strings):
@@ -34,15 +33,12 @@ def suppress_qt_thread_warnings():
     ]
     sys.stderr = FilteredStderr(sys.stderr, filter_patterns)
 
-# Ativa o filtro imediatamente, antes de qualquer outra coisa
 suppress_qt_thread_warnings()
-
-# 2. Configura variáveis de ambiente do Qt para silenciar warnings
 os.environ["QT_LOGGING_RULES"] = "*.debug=false;*.warning=false"
 os.environ["QT_FATAL_WARNINGS"] = "0"
 
 # ------------------------------------------------------------
-# IMPORTAÇÕES DO PROJETO (APÓS O FILTRO)
+# IMPORTAÇÕES DO PROJETO
 # ------------------------------------------------------------
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
 
@@ -71,13 +67,16 @@ def setup_logging(debug=False):
     )
 
 def log_final_configuration(args, final_fps, roi_polygons):
-    """Exibe um resumo das configurações finais que serão utilizadas."""
     logging.info("=" * 60)
     logging.info("CONFIGURAÇÕES FINAIS DA EXECUÇÃO")
     logging.info("=" * 60)
     logging.info(f"Fonte: {args.source_type} -> {args.source_param}")
     if args.source_type == 'camera':
         logging.info(f"Resolução: {args.width}x{args.height}")
+        if args.camera_codec:
+            logging.info(f"Codec da câmera: {args.camera_codec}")
+        else:
+            logging.info("Codec da câmera: nativo")
     logging.info(f"FPS de gravação: {final_fps:.2f}")
     logging.info(f"Diretório de saída: {args.output_dir}")
     logging.info(f"Método de detecção: {args.detection_method}")
@@ -101,22 +100,18 @@ def log_final_configuration(args, final_fps, roi_polygons):
 # FUNÇÃO PRINCIPAL
 # ------------------------------------------------------------
 def main():
-    # Parse preliminar para obter --config e --debug
     prelim_parser = argparse.ArgumentParser(add_help=False)
     prelim_parser.add_argument("--config", type=str, default="config.json")
     prelim_parser.add_argument("--debug", action="store_true")
     prelim_args, remaining_args = prelim_parser.parse_known_args()
 
-    # Carrega configurações do JSON
     config = load_config(prelim_args.config)
     config = {k: v for k, v in config.items() if v is not None}
 
-    # Configura logging
     debug_mode = prelim_args.debug or config.get('debug', False)
     setup_logging(debug_mode)
     logging.debug(f"Configurações carregadas do JSON: {pformat(config)}")
 
-    # Parser completo
     parser = argparse.ArgumentParser(description="Sistema de gravação por detecção de movimento")
     parser.add_argument("--config", type=str, default="config.json")
     parser.add_argument("--source-type", choices=['camera', 'rtsp', 'dir', 'video'], default='camera')
@@ -140,6 +135,8 @@ def main():
     parser.add_argument("--debug", action="store_true")
     parser.add_argument("--max-storage-mb", type=int, default=0)
     parser.add_argument("--storage-policy", choices=['stop', 'delete_oldest'], default='stop')
+    parser.add_argument("--camera-codec", type=str, default=None,
+                        help="Codec da câmera (ex: MJPG, YUYV, H264). Se não informado, usa o nativo.")
 
     parser.set_defaults(**config)
     args = parser.parse_args(remaining_args)
@@ -165,14 +162,15 @@ def main():
             sys.exit(1)
         uploader = Uploader(args.server_url, remove_after_upload=args.remove_after_upload)
 
-    # Fonte de vídeo (primeiro cria a fonte bruta)
+    # Fonte de vídeo (bruta)
     raw_source = None
     if args.source_type == 'camera':
         try:
             device = int(args.source_param)
         except ValueError:
             device = args.source_param
-        raw_source = CameraSource(device, width=args.width, height=args.height, fps=args.fps)
+        raw_source = CameraSource(device, width=args.width, height=args.height,
+                                  fps=args.fps, codec=args.camera_codec)
     elif args.source_type == 'rtsp':
         raw_source = RTSPSource(args.source_param)
     elif args.source_type == 'dir':
@@ -183,8 +181,7 @@ def main():
         logging.error("Tipo de fonte inválido")
         sys.exit(1)
 
-    # Aplica ThreadedFrameSource APENAS para fontes ao vivo (câmera/RTSP)
-    # Isso evita a leitura acelerada em arquivos de vídeo
+    # Aplica ThreadedFrameSource APENAS para fontes ao vivo (evita aceleração em arquivos)
     if raw_source.is_live:
         source = ThreadedFrameSource(raw_source, timeout_sec=2.0)
         logging.info("ThreadedFrameSource ativado para fonte ao vivo")
