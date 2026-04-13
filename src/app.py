@@ -1,7 +1,6 @@
 import time
 import threading
 import logging
-from datetime import datetime
 import cv2
 import numpy as np
 
@@ -48,10 +47,28 @@ class MotionRecorderApp:
             logger.info("Modo preview ativado. Pressione 'q' na janela para sair.")
             cv2.namedWindow(self.preview_window_name, cv2.WINDOW_NORMAL)
 
+        # Controle de taxa para TODAS as fontes (ao vivo ou arquivo)
+        target_fps = self.recorder.fps
+        if target_fps <= 0:
+            target_fps = 20
+            logger.warning(f"FPS inválido ({target_fps}), usando fallback 20")
+        frame_interval = 1.0 / target_fps
+        last_frame_time = time.time()
+        logger.info(f"Controle de taxa ativo: {target_fps:.2f} fps")
+
         while not self.stop_event.is_set():
+            now = time.time()
+            sleep_time = frame_interval - (now - last_frame_time)
+            if sleep_time > 0:
+                time.sleep(sleep_time)
+            last_frame_time = time.time()
+
             frame = self.source.get_frame()
             if frame is None:
-                # Timeout ou fim da stream: espera um pouco e verifica stop_event novamente
+                # Fim do arquivo ou erro
+                if not self.source.is_live:
+                    logger.info("Fim da fonte de vídeo. Encerrando...")
+                    break
                 self.stop_event.wait(0.05)
                 continue
 
@@ -67,7 +84,7 @@ class MotionRecorderApp:
                 if not self.recording and self.motion_counter >= self.min_motion_frames:
                     self.recording = True
                     self.recorder.start_recording()
-                    logger.info(f"Movimento detectado - gravando")
+                    logger.info("Movimento detectado - gravando")
             else:
                 if self.recording:
                     if self.no_motion_start is None:
@@ -75,7 +92,7 @@ class MotionRecorderApp:
                     elif time.time() - self.no_motion_start > self.cooldown:
                         self.recording = False
                         self.recorder.stop_recording()
-                        logger.info(f"Sem movimento - gravação encerrada")
+                        logger.info("Sem movimento - gravação encerrada")
                 else:
                     self.motion_counter = max(0, self.motion_counter - 1)
 
@@ -87,11 +104,9 @@ class MotionRecorderApp:
                 cv2.imshow(self.preview_window_name, frame)
                 key = cv2.waitKey(1) & 0xFF
                 if key == ord('q'):
-                    logger.info("Comando 'q' recebido na janela de preview. Encerrando...")
+                    logger.info("Comando 'q' recebido. Encerrando...")
                     self.stop_event.set()
                     break
-
-            self.stop_event.wait(0.01)
 
         logger.info("Parando aplicação...")
         if self.recording:

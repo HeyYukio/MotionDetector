@@ -3,22 +3,35 @@ import os
 import time
 import logging
 import threading
-import queue
 
 logger = logging.getLogger(__name__)
 
 class FrameSource:
+    is_live = False
+
     def get_frame(self):
         raise NotImplementedError
+
     def release(self):
         pass
 
+    def get_fps(self):
+        return None
+
 class CameraSource(FrameSource):
-    def __init__(self, src=0, width=640, height=480):
+    is_live = True
+
+    def __init__(self, src=0, width=640, height=480, fps=None):
         self.cap = cv2.VideoCapture(src)
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
-        logger.info(f"CameraSource iniciada: {src}")
+        if fps is not None:
+            self.cap.set(cv2.CAP_PROP_FPS, fps)
+        actual_fps = self.cap.get(cv2.CAP_PROP_FPS)
+        if actual_fps > 0:
+            logger.info(f"CameraSource iniciada: {src} ({width}x{height}) @ {actual_fps:.2f} fps")
+        else:
+            logger.info(f"CameraSource iniciada: {src} ({width}x{height})")
 
     def get_frame(self):
         ret, frame = self.cap.read()
@@ -28,7 +41,13 @@ class CameraSource(FrameSource):
         self.cap.release()
         logger.info("CameraSource liberada")
 
+    def get_fps(self):
+        fps = self.cap.get(cv2.CAP_PROP_FPS)
+        return fps if fps > 0 else None
+
 class RTSPSource(FrameSource):
+    is_live = True
+
     def __init__(self, url, timeout=5, max_reconnect=10):
         self.url = url
         self.timeout = timeout
@@ -71,7 +90,15 @@ class RTSPSource(FrameSource):
             self.cap.release()
         logger.info("RTSPSource liberada")
 
+    def get_fps(self):
+        if self.cap and self.cap.isOpened():
+            fps = self.cap.get(cv2.CAP_PROP_FPS)
+            return fps if fps > 0 else None
+        return None
+
 class DirectorySource(FrameSource):
+    is_live = False
+
     def __init__(self, path, ext=('.jpg', '.png')):
         self.files = sorted([f for f in os.listdir(path) if f.lower().endswith(ext)])
         self.index = 0
@@ -86,9 +113,13 @@ class DirectorySource(FrameSource):
         return cv2.imread(img_path)
 
 class VideoFileSource(FrameSource):
+    is_live = False
+
     def __init__(self, path):
         self.cap = cv2.VideoCapture(path)
-        logger.info(f"VideoFileSource: {path}")
+        self.path = path
+        fps = self.get_fps()
+        logger.info(f"VideoFileSource: {path} @ {fps:.2f} fps" if fps else f"VideoFileSource: {path}")
 
     def get_frame(self):
         ret, frame = self.cap.read()
@@ -97,43 +128,49 @@ class VideoFileSource(FrameSource):
     def release(self):
         self.cap.release()
 
+    def get_fps(self):
+        fps = self.cap.get(cv2.CAP_PROP_FPS)
+        return fps if fps > 0 else None
 
 class ThreadedFrameSource(FrameSource):
-    """Wrapper que executa a captura em uma thread separada e fornece frames via fila."""
-    def __init__(self, source, max_queue_size=30, timeout_sec=2.0):
+    """
+    Wrapper que executa a captura em uma thread separada e fornece
+    SEMPRE o frame mais recente (sem fila). Isso elimina a latência
+    acumulada quando o consumo é mais lento que a produção.
+    """
+    def __init__(self, source, timeout_sec=2.0):
         self.source = source
         self.timeout_sec = timeout_sec
-        self.queue = queue.Queue(maxsize=max_queue_size)
+        self.latest_frame = None
+        self.lock = threading.Lock()
         self.running = True
         self.thread = threading.Thread(target=self._capture_worker, daemon=True)
         self.thread.start()
-        logger.info("ThreadedFrameSource iniciado")
+        self.is_live = source.is_live
+        logger.info("ThreadedFrameSource (latest-frame mode) iniciado")
 
     def _capture_worker(self):
         while self.running:
             frame = self.source.get_frame()
+            with self.lock:
+                self.latest_frame = frame
             if frame is None:
-                self.queue.put(None)
                 break
-            try:
-                self.queue.put(frame, timeout=1.0)
-            except queue.Full:
-                # Se a fila estiver cheia, descarta o frame mais antigo
-                try:
-                    self.queue.get_nowait()
-                except queue.Empty:
-                    pass
-                self.queue.put(frame)
 
     def get_frame(self):
-        """Retorna um frame ou None se não houver dentro do timeout."""
-        try:
-            return self.queue.get(timeout=self.timeout_sec)
-        except queue.Empty:
-            return None
+        with self.lock:
+            frame = self.latest_frame
+            if frame is not None:
+                return frame.copy()
+        return None
 
     def release(self):
         self.running = False
         self.source.release()
         self.thread.join(timeout=2.0)
         logger.info("ThreadedFrameSource liberado")
+
+    def get_fps(self):
+        if hasattr(self.source, 'get_fps'):
+            return self.source.get_fps()
+        return None
