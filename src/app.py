@@ -47,29 +47,51 @@ class MotionRecorderApp:
             logger.info("Modo preview ativado. Pressione 'q' na janela para sair.")
             cv2.namedWindow(self.preview_window_name, cv2.WINDOW_NORMAL)
 
-        # Controle de taxa para TODAS as fontes (ao vivo ou arquivo)
+        # FPS alvo para gravação
         target_fps = self.recorder.fps
         if target_fps <= 0:
             target_fps = 20
-            logger.warning(f"FPS inválido ({target_fps}), usando fallback 20")
-        frame_interval = 1.0 / target_fps
-        last_frame_time = time.time()
-        logger.info(f"Controle de taxa ativo: {target_fps:.2f} fps")
+            logger.warning(f"FPS inválido, usando fallback {target_fps}")
+
+        # Verifica se a fonte é ao vivo ou arquivo
+        is_live_source = getattr(self.source, 'is_live', False)
+
+        if is_live_source:
+            # Para fontes ao vivo, usa controle de taxa de passo fixo
+            frame_interval = 1.0 / target_fps
+            logger.info(f"Fonte ao vivo – controle de taxa ativo: {target_fps:.2f} fps (intervalo {frame_interval*1000:.2f} ms)")
+            next_frame_time = time.perf_counter()
+        else:
+            # Para arquivos, processa o mais rápido possível, sem controle de taxa
+            logger.info(f"Fonte de arquivo – processamento em velocidade máxima (sem controle de taxa)")
+            # Verifica se o FPS de gravação difere do FPS original do arquivo
+            source_fps = None
+            if hasattr(self.source, 'get_fps'):
+                source_fps = self.source.get_fps()
+            if source_fps and source_fps > 0 and abs(source_fps - target_fps) > 0.1:
+                logger.warning(
+                    f"FPS de gravação ({target_fps:.2f}) é diferente do FPS original do arquivo ({source_fps:.2f}). "
+                    f"O vídeo resultante terá a velocidade alterada (duração {source_fps/target_fps:.2f}x em relação ao original)."
+                )
 
         while not self.stop_event.is_set():
-            now = time.time()
-            sleep_time = frame_interval - (now - last_frame_time)
-            if sleep_time > 0:
-                time.sleep(sleep_time)
-            last_frame_time = time.time()
+            if is_live_source:
+                # Controle de taxa apenas para fontes ao vivo
+                now = time.perf_counter()
+                if now < next_frame_time:
+                    time.sleep(next_frame_time - now)
+                else:
+                    next_frame_time = now + frame_interval
+                    logger.debug(f"Atraso na captura, ajustando temporizador")
 
             frame = self.source.get_frame()
             if frame is None:
-                # Fim do arquivo ou erro
                 if not self.source.is_live:
                     logger.info("Fim da fonte de vídeo. Encerrando...")
                     break
                 self.stop_event.wait(0.05)
+                if is_live_source:
+                    next_frame_time = time.perf_counter() + frame_interval
                 continue
 
             if self.show_preview:
@@ -107,6 +129,9 @@ class MotionRecorderApp:
                     logger.info("Comando 'q' recebido. Encerrando...")
                     self.stop_event.set()
                     break
+
+            if is_live_source:
+                next_frame_time += frame_interval
 
         logger.info("Parando aplicação...")
         if self.recording:
