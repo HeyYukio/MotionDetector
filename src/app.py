@@ -47,53 +47,98 @@ class MotionRecorderApp:
             logger.info("Modo preview ativado. Pressione 'q' na janela para sair.")
             cv2.namedWindow(self.preview_window_name, cv2.WINDOW_NORMAL)
 
-        # FPS alvo para gravação
         target_fps = self.recorder.fps
         if target_fps <= 0:
             target_fps = 20
             logger.warning(f"FPS inválido, usando fallback {target_fps}")
 
-        # Verifica se a fonte é ao vivo ou arquivo
         is_live_source = getattr(self.source, 'is_live', False)
 
         if is_live_source:
-            # Para fontes ao vivo, usa controle de taxa de passo fixo
+            # Fonte ao vivo: controle de taxa de passo fixo
             frame_interval = 1.0 / target_fps
             logger.info(f"Fonte ao vivo – controle de taxa ativo: {target_fps:.2f} fps (intervalo {frame_interval*1000:.2f} ms)")
             next_frame_time = time.perf_counter()
         else:
-            # Para arquivos, processa o mais rápido possível, sem controle de taxa
-            logger.info(f"Fonte de arquivo – processamento em velocidade máxima (sem controle de taxa)")
-            # Verifica se o FPS de gravação difere do FPS original do arquivo
+            # Fonte de arquivo: descarte de frames para manter duração original
             source_fps = None
             if hasattr(self.source, 'get_fps'):
                 source_fps = self.source.get_fps()
-            if source_fps and source_fps > 0 and abs(source_fps - target_fps) > 0.1:
-                logger.warning(
-                    f"FPS de gravação ({target_fps:.2f}) é diferente do FPS original do arquivo ({source_fps:.2f}). "
-                    f"O vídeo resultante terá a velocidade alterada (duração {source_fps/target_fps:.2f}x em relação ao original)."
+            total_frames = None
+            if hasattr(self.source, 'get_frame_count'):
+                total_frames = self.source.get_frame_count()
+
+            if source_fps and source_fps > 0:
+                # Calcula passo de amostragem
+                self.frame_step = source_fps / target_fps
+                logger.info(
+                    f"Fonte de arquivo com FPS nativo {source_fps:.2f}. "
+                    f"Gravando a {target_fps:.2f} fps -> descartando frames (1 a cada {self.frame_step:.2f})."
                 )
+                if total_frames:
+                    expected_duration = total_frames / source_fps
+                    output_frames = int(total_frames / self.frame_step)
+                    output_duration = output_frames / target_fps
+                    logger.info(
+                        f"Vídeo original: {total_frames} frames, {expected_duration:.2f}s. "
+                        f"Saída: ~{output_frames} frames, {output_duration:.2f}s."
+                    )
+                self.frame_counter = 0  # contador de frames lidos do arquivo
+                self.next_frame_to_take = 0.0  # próximo índice (float) a ser capturado
+            else:
+                logger.warning(
+                    "Não foi possível obter o FPS nativo da fonte de arquivo. "
+                    "Todos os frames serão processados (sem descarte). A duração do vídeo resultante pode ser diferente da original."
+                )
+                self.frame_step = None
 
         while not self.stop_event.is_set():
             if is_live_source:
-                # Controle de taxa apenas para fontes ao vivo
+                # Controle de taxa para fonte ao vivo
                 now = time.perf_counter()
                 if now < next_frame_time:
                     time.sleep(next_frame_time - now)
                 else:
                     next_frame_time = now + frame_interval
-                    logger.debug(f"Atraso na captura, ajustando temporizador")
+                    logger.debug("Atraso na captura, ajustando temporizador")
 
-            frame = self.source.get_frame()
-            if frame is None:
-                if not self.source.is_live:
-                    logger.info("Fim da fonte de vídeo. Encerrando...")
-                    break
-                self.stop_event.wait(0.05)
-                if is_live_source:
+                frame = self.source.get_frame()
+                if frame is None:
+                    if not self.source.is_live:
+                        logger.info("Fim da fonte de vídeo. Encerrando...")
+                        break
+                    self.stop_event.wait(0.05)
                     next_frame_time = time.perf_counter() + frame_interval
-                continue
+                    continue
+            else:
+                # Processamento de arquivo com possível descarte
+                frame = self.source.get_frame()
+                if frame is None:
+                    logger.info("Fim da fonte de arquivo. Encerrando...")
+                    break
 
+                if self.frame_step is not None:
+                    # Decide se este frame deve ser processado
+                    take_this_frame = False
+                    while self.next_frame_to_take < self.frame_counter + 1:
+                        # Enquanto o próximo alvo estiver dentro do intervalo [frame_counter, frame_counter+1)
+                        # capturamos este frame (garante que pelo menos um frame seja pego quando step < 1)
+                        take_this_frame = True
+                        self.next_frame_to_take += self.frame_step
+                    self.frame_counter += 1
+
+                    if not take_this_frame:
+                        # Pula este frame (não processa detecção nem gravação)
+                        if self.show_preview:
+                            # Mesmo sem processar, podemos mostrar o preview? Para consistência, mostramos.
+                            # Mas cuidado com desempenho: preview pode ficar mais rápido que o normal.
+                            # Vamos continuar desenhando preview para todos os frames ou só para os selecionados?
+                            # Por simplicidade, desenhamos apenas os selecionados. Se quiser ver todos, remova o continue.
+                            continue
+                        else:
+                            continue
+
+            # Daqui em diante, processamento comum (detecção, gravação, preview)
             if self.show_preview:
                 self._update_roi_absolute(frame.shape)
 

@@ -1,9 +1,9 @@
 {
-    "source_type": "camera",
-    "source_param": 0,
+    "source_type": "video",
+    "source_param": "../videos/bike_counter.mp4",
     "width": null,
     "height": null,
-    "fps": 30,
+    "fps": 10,
     "camera_codec": "MJPG",
     "output_dir": "../videos_output",
     "detection_method": "mog2",
