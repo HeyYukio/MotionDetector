@@ -54,13 +54,19 @@ class MotionRecorderApp:
 
         is_live_source = getattr(self.source, 'is_live', False)
 
+        # =====================================================================
+        # INICIALIZAÇÃO DAS VARIÁVEIS DE CONTROLE (AO VIVO OU ARQUIVO)
+        # =====================================================================
         if is_live_source:
-            # Fonte ao vivo: controle de taxa de passo fixo
             frame_interval = 1.0 / target_fps
-            logger.info(f"Fonte ao vivo – controle de taxa ativo: {target_fps:.2f} fps (intervalo {frame_interval*1000:.2f} ms)")
-            next_frame_time = time.perf_counter()
+            logger.info(
+                f"Fonte ao vivo – amostrador com preenchimento ativo: "
+                f"{target_fps:.2f} fps ({frame_interval*1000:.2f} ms)"
+            )
+            next_capture_time = time.perf_counter()
+            last_processed_frame = None
         else:
-            # Fonte de arquivo: descarte de frames para manter duração original
+            # Fonte de arquivo: reamostrador temporal (duplica/descarta conforme necessário)
             source_fps = None
             if hasattr(self.source, 'get_fps'):
                 source_fps = self.source.get_fps()
@@ -69,114 +75,159 @@ class MotionRecorderApp:
                 total_frames = self.source.get_frame_count()
 
             if source_fps and source_fps > 0:
-                # Calcula passo de amostragem
-                self.frame_step = source_fps / target_fps
+                self.source_fps = source_fps
+                self.ratio = target_fps / source_fps
+                self.output_accum = 0.0
                 logger.info(
                     f"Fonte de arquivo com FPS nativo {source_fps:.2f}. "
-                    f"Gravando a {target_fps:.2f} fps -> descartando frames (1 a cada {self.frame_step:.2f})."
+                    f"Gravando a {target_fps:.2f} fps -> reamostrando (razão {self.ratio:.3f})."
                 )
                 if total_frames:
-                    expected_duration = total_frames / source_fps
-                    output_frames = int(total_frames / self.frame_step)
+                    original_duration = total_frames / source_fps
+                    output_frames = int(total_frames * self.ratio)
                     output_duration = output_frames / target_fps
                     logger.info(
-                        f"Vídeo original: {total_frames} frames, {expected_duration:.2f}s. "
+                        f"Vídeo original: {total_frames} frames, {original_duration:.2f}s. "
                         f"Saída: ~{output_frames} frames, {output_duration:.2f}s."
                     )
-                self.frame_counter = 0  # contador de frames lidos do arquivo
-                self.next_frame_to_take = 0.0  # próximo índice (float) a ser capturado
             else:
+                self.source_fps = None
                 logger.warning(
                     "Não foi possível obter o FPS nativo da fonte de arquivo. "
-                    "Todos os frames serão processados (sem descarte). A duração do vídeo resultante pode ser diferente da original."
+                    "Todos os frames serão processados sem reamostragem. "
+                    "A duração do vídeo resultante pode ser diferente da original."
                 )
-                self.frame_step = None
 
+        # =====================================================================
+        # LOOP PRINCIPAL
+        # =====================================================================
         while not self.stop_event.is_set():
-            if is_live_source:
-                # Controle de taxa para fonte ao vivo
-                now = time.perf_counter()
-                if now < next_frame_time:
-                    time.sleep(next_frame_time - now)
-                else:
-                    next_frame_time = now + frame_interval
-                    logger.debug("Atraso na captura, ajustando temporizador")
 
+            # ----------------------------------------------------------------
+            # TRATAMENTO PARA FONTES AO VIVO
+            # ----------------------------------------------------------------
+            if is_live_source:
+                now = time.perf_counter()
                 frame = self.source.get_frame()
                 if frame is None:
                     if not self.source.is_live:
                         logger.info("Fim da fonte de vídeo. Encerrando...")
                         break
                     self.stop_event.wait(0.05)
-                    next_frame_time = time.perf_counter() + frame_interval
                     continue
+
+                # Ainda não é hora de emitir um quadro -> espera ativa curta
+                if now < next_capture_time:
+                    time.sleep(0.001)
+                    continue
+
+                # Quantos intervalos de frame_interval se passaram desde a última emissão?
+                elapsed_intervals = int((now - next_capture_time) / frame_interval) + 1
+                # Proteção contra atraso extremo
+                if elapsed_intervals > 100:
+                    elapsed_intervals = 100
+                    next_capture_time = now
+
+                # Preenche os (elapsed_intervals - 1) intervalos anteriores com duplicatas
+                for _ in range(elapsed_intervals - 1):
+                    if last_processed_frame is not None and self.recording:
+                        self.recorder.add_frame(last_processed_frame.copy())
+                    next_capture_time += frame_interval
+
+                # Processa o frame ATUAL como o último intervalo
+                if self.show_preview:
+                    self._update_roi_absolute(frame.shape)
+
+                contours = self.detector.detect_with_contours(frame)
+                motion = len(contours) > 0
+
+                if motion:
+                    self.motion_counter += 1
+                    self.no_motion_start = None
+                    if not self.recording and self.motion_counter >= self.min_motion_frames:
+                        self.recording = True
+                        self.recorder.start_recording()
+                        logger.info("Movimento detectado - gravando")
+                else:
+                    if self.recording:
+                        if self.no_motion_start is None:
+                            self.no_motion_start = time.time()
+                        elif time.time() - self.no_motion_start > self.cooldown:
+                            self.recording = False
+                            self.recorder.stop_recording()
+                            logger.info("Sem movimento - gravação encerrada")
+                    else:
+                        self.motion_counter = max(0, self.motion_counter - 1)
+
+                if self.recording:
+                    self.recorder.add_frame(frame)
+
+                last_processed_frame = frame.copy()
+                next_capture_time += frame_interval
+
+                if self.show_preview:
+                    self._draw_preview(frame, motion, contours)
+                    cv2.imshow(self.preview_window_name, frame)
+                    key = cv2.waitKey(1) & 0xFF
+                    if key == ord('q'):
+                        logger.info("Comando 'q' recebido. Encerrando...")
+                        self.stop_event.set()
+                        break
+
+            # ----------------------------------------------------------------
+            # TRATAMENTO PARA FONTES DE ARQUIVO
+            # ----------------------------------------------------------------
             else:
-                # Processamento de arquivo com possível descarte
                 frame = self.source.get_frame()
                 if frame is None:
                     logger.info("Fim da fonte de arquivo. Encerrando...")
                     break
 
-                if self.frame_step is not None:
-                    # Decide se este frame deve ser processado
-                    take_this_frame = False
-                    while self.next_frame_to_take < self.frame_counter + 1:
-                        # Enquanto o próximo alvo estiver dentro do intervalo [frame_counter, frame_counter+1)
-                        # capturamos este frame (garante que pelo menos um frame seja pego quando step < 1)
-                        take_this_frame = True
-                        self.next_frame_to_take += self.frame_step
-                    self.frame_counter += 1
+                # Detecção de movimento (uma única vez por frame original)
+                if self.show_preview:
+                    self._update_roi_absolute(frame.shape)
 
-                    if not take_this_frame:
-                        # Pula este frame (não processa detecção nem gravação)
-                        if self.show_preview:
-                            # Mesmo sem processar, podemos mostrar o preview? Para consistência, mostramos.
-                            # Mas cuidado com desempenho: preview pode ficar mais rápido que o normal.
-                            # Vamos continuar desenhando preview para todos os frames ou só para os selecionados?
-                            # Por simplicidade, desenhamos apenas os selecionados. Se quiser ver todos, remova o continue.
-                            continue
-                        else:
-                            continue
+                contours = self.detector.detect_with_contours(frame)
+                motion = len(contours) > 0
 
-            # Daqui em diante, processamento comum (detecção, gravação, preview)
-            if self.show_preview:
-                self._update_roi_absolute(frame.shape)
-
-            contours = self.detector.detect_with_contours(frame)
-            motion = len(contours) > 0
-
-            if motion:
-                self.motion_counter += 1
-                self.no_motion_start = None
-                if not self.recording and self.motion_counter >= self.min_motion_frames:
-                    self.recording = True
-                    self.recorder.start_recording()
-                    logger.info("Movimento detectado - gravando")
-            else:
-                if self.recording:
-                    if self.no_motion_start is None:
-                        self.no_motion_start = time.time()
-                    elif time.time() - self.no_motion_start > self.cooldown:
-                        self.recording = False
-                        self.recorder.stop_recording()
-                        logger.info("Sem movimento - gravação encerrada")
+                if motion:
+                    self.motion_counter += 1
+                    self.no_motion_start = None
+                    if not self.recording and self.motion_counter >= self.min_motion_frames:
+                        self.recording = True
+                        self.recorder.start_recording()
+                        logger.info("Movimento detectado - gravando")
                 else:
-                    self.motion_counter = max(0, self.motion_counter - 1)
+                    if self.recording:
+                        if self.no_motion_start is None:
+                            self.no_motion_start = time.time()
+                        elif time.time() - self.no_motion_start > self.cooldown:
+                            self.recording = False
+                            self.recorder.stop_recording()
+                            logger.info("Sem movimento - gravação encerrada")
+                    else:
+                        self.motion_counter = max(0, self.motion_counter - 1)
 
-            if self.recording:
-                self.recorder.add_frame(frame)
+                # Reamostragem temporal: quantas cópias deste frame enviar ao gravador?
+                if self.source_fps is not None:
+                    self.output_accum += self.ratio
+                    num_copies = int(self.output_accum)
+                    self.output_accum -= num_copies
+                else:
+                    num_copies = 1
 
-            if self.show_preview:
-                self._draw_preview(frame, motion, contours)
-                cv2.imshow(self.preview_window_name, frame)
-                key = cv2.waitKey(1) & 0xFF
-                if key == ord('q'):
-                    logger.info("Comando 'q' recebido. Encerrando...")
-                    self.stop_event.set()
-                    break
+                for _ in range(num_copies):
+                    if self.recording:
+                        self.recorder.add_frame(frame)
 
-            if is_live_source:
-                next_frame_time += frame_interval
+                if self.show_preview:
+                    self._draw_preview(frame, motion, contours)
+                    cv2.imshow(self.preview_window_name, frame)
+                    key = cv2.waitKey(1) & 0xFF
+                    if key == ord('q'):
+                        logger.info("Comando 'q' recebido. Encerrando...")
+                        self.stop_event.set()
+                        break
 
         logger.info("Parando aplicação...")
         if self.recording:
@@ -199,5 +250,7 @@ class MotionRecorderApp:
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
         cv2.putText(frame, f"Contador: {self.motion_counter}", (10, 90),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        fps_text = f"FPS alvo: {self.recorder.fps:.1f}"
+        cv2.putText(frame, fps_text, (10, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
         cv2.putText(frame, "Pressione 'q' para sair", (10, frame.shape[0] - 10),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (100, 100, 255), 1)

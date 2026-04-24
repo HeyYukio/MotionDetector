@@ -1,4 +1,3 @@
-# sources.py
 import cv2
 import os
 import time
@@ -19,6 +18,9 @@ class FrameSource:
     def get_fps(self):
         return None
 
+    def get_frame_count(self):
+        return None
+
 class CameraSource(FrameSource):
     is_live = True
 
@@ -27,7 +29,6 @@ class CameraSource(FrameSource):
         if not self.cap.isOpened():
             raise IOError(f"Não foi possível abrir a câmera {src}")
 
-        # Tenta definir o codec apenas se fornecido (não None)
         if codec is not None:
             fourcc = cv2.VideoWriter_fourcc(*codec)
             if self.cap.set(cv2.CAP_PROP_FOURCC, fourcc):
@@ -35,7 +36,6 @@ class CameraSource(FrameSource):
             else:
                 logger.warning(f"Não foi possível definir o codec para {codec}. Usando o padrão da câmera.")
 
-        # Define resolução e FPS
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
         if fps is not None:
@@ -125,6 +125,9 @@ class DirectorySource(FrameSource):
         self.index += 1
         return cv2.imread(img_path)
 
+    def get_frame_count(self):
+        return len(self.files)
+
 class VideoFileSource(FrameSource):
     is_live = False
 
@@ -144,6 +147,10 @@ class VideoFileSource(FrameSource):
     def get_fps(self):
         fps = self.cap.get(cv2.CAP_PROP_FPS)
         return fps if fps > 0 else None
+
+    def get_frame_count(self):
+        count = self.cap.get(cv2.CAP_PROP_FRAME_COUNT)
+        return int(count) if count > 0 else None
 
 class ThreadedFrameSource(FrameSource):
     """
@@ -186,4 +193,9 @@ class ThreadedFrameSource(FrameSource):
     def get_fps(self):
         if hasattr(self.source, 'get_fps'):
             return self.source.get_fps()
+        return None
+
+    def get_frame_count(self):
+        if hasattr(self.source, 'get_frame_count'):
+            return self.source.get_frame_count()
         return None

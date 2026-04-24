@@ -46,6 +46,7 @@ import argparse
 import logging
 import signal
 import threading
+import time
 from pprint import pformat
 
 from sources import CameraSource, RTSPSource, DirectorySource, VideoFileSource, ThreadedFrameSource
@@ -95,6 +96,37 @@ def log_final_configuration(args, final_fps, roi_polygons):
         logging.info(f"ROIs carregadas: {len(roi_polygons)} polígono(s)")
     logging.info(f"Modo debug: {'Sim' if args.debug else 'Não'}")
     logging.info("=" * 60)
+
+def measure_processing_fps(source, detector, num_frames=50, warmup_frames=10):
+    """
+    Mede a taxa de processamento real capturando alguns frames
+    e aplicando a detecção. Retorna o FPS máximo sustentável.
+    """
+    logger = logging.getLogger(__name__)
+    # Descarta frames iniciais para estabilizar a câmera
+    for _ in range(warmup_frames):
+        frame = source.get_frame()
+        if frame is None:
+            logger.warning("Sem frames durante aquecimento do benchmark.")
+            return None
+
+    start = time.perf_counter()
+    processed = 0
+    for _ in range(num_frames):
+        frame = source.get_frame()
+        if frame is None:
+            break
+        # Aplica a detecção de movimento (usando o método completo para ser realista)
+        _ = detector.detect_with_contours(frame)
+        processed += 1
+    end = time.perf_counter()
+
+    if processed == 0:
+        return None
+    elapsed = end - start
+    fps = processed / elapsed
+    logger.info(f"Benchmark: {processed} frames processados em {elapsed:.2f}s -> {fps:.2f} fps")
+    return fps
 
 # ------------------------------------------------------------
 # FUNÇÃO PRINCIPAL
@@ -189,6 +221,14 @@ def main():
         source = raw_source
         logging.info("Usando fonte direta (sem thread) para arquivo/diretório")
 
+    # Detector
+    detector = MotionDetector(
+        method=args.detection_method,
+        threshold=args.threshold,
+        min_area=args.min_area,
+        roi_polygons_normalized=roi_polygons
+    )
+
     # Determinação do FPS
     if args.fps is not None:
         final_fps = args.fps
@@ -208,13 +248,18 @@ def main():
         final_fps = args.fps
         logging.info(f"Forçando FPS (--force-fps): {final_fps}")
 
-    # Detector
-    detector = MotionDetector(
-        method=args.detection_method,
-        threshold=args.threshold,
-        min_area=args.min_area,
-        roi_polygons_normalized=roi_polygons
-    )
+    # Medição de capacidade de processamento (apenas para fontes ao vivo e se FPS foi definido)
+    if source.is_live and args.fps is not None and not args.force_fps:
+        logging.info("Medindo capacidade de processamento...")
+        measured_fps = measure_processing_fps(source, detector, num_frames=50, warmup_frames=10)
+        if measured_fps and measured_fps < final_fps:
+            logging.warning(
+                f"Hardware sustentou apenas {measured_fps:.2f} fps. "
+                f"Reduzindo FPS de gravação de {final_fps:.2f} para {measured_fps:.2f}."
+            )
+            final_fps = measured_fps
+        elif measured_fps:
+            logging.info(f"Hardware suporta o FPS desejado ({final_fps:.2f} fps).")
 
     # Gravador
     max_storage_bytes = args.max_storage_mb * 1024 * 1024 if args.max_storage_mb > 0 else None
