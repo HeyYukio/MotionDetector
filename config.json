@@ -19,5 +19,6 @@
     "roi_json": null,
     "debug": false,
     "max_storage_mb": 1000,
-    "storage_policy": "stop" 
+    "storage_policy": "stop",
+    "equipment_id": "0000"
 }

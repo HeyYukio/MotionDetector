@@ -54,9 +54,6 @@ class MotionRecorderApp:
 
         is_live_source = getattr(self.source, 'is_live', False)
 
-        # =====================================================================
-        # INICIALIZAÇÃO DAS VARIÁVEIS DE CONTROLE (AO VIVO OU ARQUIVO)
-        # =====================================================================
         if is_live_source:
             frame_interval = 1.0 / target_fps
             logger.info(
@@ -66,7 +63,6 @@ class MotionRecorderApp:
             next_capture_time = time.perf_counter()
             last_processed_frame = None
         else:
-            # Fonte de arquivo: reamostrador temporal (duplica/descarta conforme necessário)
             source_fps = None
             if hasattr(self.source, 'get_fps'):
                 source_fps = self.source.get_fps()
@@ -98,14 +94,7 @@ class MotionRecorderApp:
                     "A duração do vídeo resultante pode ser diferente da original."
                 )
 
-        # =====================================================================
-        # LOOP PRINCIPAL
-        # =====================================================================
         while not self.stop_event.is_set():
-
-            # ----------------------------------------------------------------
-            # TRATAMENTO PARA FONTES AO VIVO
-            # ----------------------------------------------------------------
             if is_live_source:
                 now = time.perf_counter()
                 frame = self.source.get_frame()
@@ -116,25 +105,20 @@ class MotionRecorderApp:
                     self.stop_event.wait(0.05)
                     continue
 
-                # Ainda não é hora de emitir um quadro -> espera ativa curta
                 if now < next_capture_time:
                     time.sleep(0.001)
                     continue
 
-                # Quantos intervalos de frame_interval se passaram desde a última emissão?
                 elapsed_intervals = int((now - next_capture_time) / frame_interval) + 1
-                # Proteção contra atraso extremo
                 if elapsed_intervals > 100:
                     elapsed_intervals = 100
                     next_capture_time = now
 
-                # Preenche os (elapsed_intervals - 1) intervalos anteriores com duplicatas
                 for _ in range(elapsed_intervals - 1):
                     if last_processed_frame is not None and self.recording:
                         self.recorder.add_frame(last_processed_frame.copy())
                     next_capture_time += frame_interval
 
-                # Processa o frame ATUAL como o último intervalo
                 if self.show_preview:
                     self._update_roi_absolute(frame.shape)
 
@@ -174,16 +158,12 @@ class MotionRecorderApp:
                         self.stop_event.set()
                         break
 
-            # ----------------------------------------------------------------
-            # TRATAMENTO PARA FONTES DE ARQUIVO
-            # ----------------------------------------------------------------
             else:
                 frame = self.source.get_frame()
                 if frame is None:
                     logger.info("Fim da fonte de arquivo. Encerrando...")
                     break
 
-                # Detecção de movimento (uma única vez por frame original)
                 if self.show_preview:
                     self._update_roi_absolute(frame.shape)
 
@@ -208,7 +188,6 @@ class MotionRecorderApp:
                     else:
                         self.motion_counter = max(0, self.motion_counter - 1)
 
-                # Reamostragem temporal: quantas cópias deste frame enviar ao gravador?
                 if self.source_fps is not None:
                     self.output_accum += self.ratio
                     num_copies = int(self.output_accum)

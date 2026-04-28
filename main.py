@@ -84,6 +84,7 @@ def log_final_configuration(args, final_fps, roi_polygons):
     logging.info(f"Threshold: {args.threshold} | Área mínima: {args.min_area}")
     logging.info(f"Pré-gravação: {args.pre_record}s | Cooldown: {args.cooldown}s")
     logging.info(f"Frames mínimos para iniciar: {args.min_motion_frames}")
+    logging.info(f"ID do equipamento: {args.equipment_id if args.equipment_id else '0000'}")
     if args.max_storage_mb > 0:
         logging.info(f"Limite de armazenamento: {args.max_storage_mb} MB | Política: {args.storage_policy}")
     else:
@@ -103,7 +104,6 @@ def measure_processing_fps(source, detector, num_frames=50, warmup_frames=10):
     e aplicando a detecção. Retorna o FPS máximo sustentável.
     """
     logger = logging.getLogger(__name__)
-    # Descarta frames iniciais para estabilizar a câmera
     for _ in range(warmup_frames):
         frame = source.get_frame()
         if frame is None:
@@ -116,7 +116,6 @@ def measure_processing_fps(source, detector, num_frames=50, warmup_frames=10):
         frame = source.get_frame()
         if frame is None:
             break
-        # Aplica a detecção de movimento (usando o método completo para ser realista)
         _ = detector.detect_with_contours(frame)
         processed += 1
     end = time.perf_counter()
@@ -169,6 +168,8 @@ def main():
     parser.add_argument("--storage-policy", choices=['stop', 'delete_oldest'], default='stop')
     parser.add_argument("--camera-codec", type=str, default=None,
                         help="Codec da câmera (ex: MJPG, YUYV, H264). Se não informado, usa o nativo.")
+    parser.add_argument("--equipment-id", type=str, default=None,
+                        help="ID do equipamento (ex: CAM01). Se não informado, usa '0000'.")
 
     parser.set_defaults(**config)
     args = parser.parse_args(remaining_args)
@@ -176,6 +177,9 @@ def main():
     if args.debug:
         logging.getLogger().setLevel(logging.DEBUG)
     logging.debug(f"Argumentos finais: {pformat(vars(args))}")
+
+    # Define o ID do equipamento
+    equipment_id = args.equipment_id if args.equipment_id else "0000"
 
     # ROIs
     roi_polygons = None
@@ -213,7 +217,6 @@ def main():
         logging.error("Tipo de fonte inválido")
         sys.exit(1)
 
-    # Aplica ThreadedFrameSource APENAS para fontes ao vivo (evita aceleração em arquivos)
     if raw_source.is_live:
         source = ThreadedFrameSource(raw_source, timeout_sec=2.0)
         logging.info("ThreadedFrameSource ativado para fonte ao vivo")
@@ -248,7 +251,7 @@ def main():
         final_fps = args.fps
         logging.info(f"Forçando FPS (--force-fps): {final_fps}")
 
-    # Medição de capacidade de processamento (apenas para fontes ao vivo e se FPS foi definido)
+    # Medição de capacidade
     if source.is_live and args.fps is not None and not args.force_fps:
         logging.info("Medindo capacidade de processamento...")
         measured_fps = measure_processing_fps(source, detector, num_frames=50, warmup_frames=10)
@@ -261,14 +264,15 @@ def main():
         elif measured_fps:
             logging.info(f"Hardware suporta o FPS desejado ({final_fps:.2f} fps).")
 
-    # Gravador
+    # Gravador (com equipment_id)
     max_storage_bytes = args.max_storage_mb * 1024 * 1024 if args.max_storage_mb > 0 else None
     recorder = Recorder(
         output_dir=args.output_dir,
         fps=final_fps,
         pre_record_seconds=args.pre_record,
         max_storage_bytes=max_storage_bytes,
-        storage_policy=args.storage_policy
+        storage_policy=args.storage_policy,
+        equipment_id=equipment_id
     )
 
     log_final_configuration(args, final_fps, roi_polygons)
