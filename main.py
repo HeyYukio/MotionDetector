@@ -46,7 +46,6 @@ import argparse
 import logging
 import signal
 import threading
-import time
 from pprint import pformat
 
 from sources import CameraSource, RTSPSource, DirectorySource, VideoFileSource, ThreadedFrameSource
@@ -67,7 +66,7 @@ def setup_logging(debug=False):
         handlers=[logging.StreamHandler()]
     )
 
-def log_final_configuration(args, final_fps, roi_polygons):
+def log_final_configuration(args, final_fps, roi_polygons, debug_record):
     logging.info("=" * 60)
     logging.info("CONFIGURAÇÕES FINAIS DA EXECUÇÃO")
     logging.info("=" * 60)
@@ -96,36 +95,8 @@ def log_final_configuration(args, final_fps, roi_polygons):
     if roi_polygons:
         logging.info(f"ROIs carregadas: {len(roi_polygons)} polígono(s)")
     logging.info(f"Modo debug: {'Sim' if args.debug else 'Não'}")
+    logging.info(f"Gravação completa (debug): {'Sim' if debug_record else 'Não'}")
     logging.info("=" * 60)
-
-def measure_processing_fps(source, detector, num_frames=50, warmup_frames=10):
-    """
-    Mede a taxa de processamento real capturando alguns frames
-    e aplicando a detecção. Retorna o FPS máximo sustentável.
-    """
-    logger = logging.getLogger(__name__)
-    for _ in range(warmup_frames):
-        frame = source.get_frame()
-        if frame is None:
-            logger.warning("Sem frames durante aquecimento do benchmark.")
-            return None
-
-    start = time.perf_counter()
-    processed = 0
-    for _ in range(num_frames):
-        frame = source.get_frame()
-        if frame is None:
-            break
-        _ = detector.detect_with_contours(frame)
-        processed += 1
-    end = time.perf_counter()
-
-    if processed == 0:
-        return None
-    elapsed = end - start
-    fps = processed / elapsed
-    logger.info(f"Benchmark: {processed} frames processados em {elapsed:.2f}s -> {fps:.2f} fps")
-    return fps
 
 # ------------------------------------------------------------
 # FUNÇÃO PRINCIPAL
@@ -149,8 +120,6 @@ def main():
     parser.add_argument("--source-param", type=str, default="0")
     parser.add_argument("--width", type=int, default=640)
     parser.add_argument("--height", type=int, default=480)
-    parser.add_argument("--fps", type=int, default=None)
-    parser.add_argument("--force-fps", action="store_true")
     parser.add_argument("--output-dir", type=str, default="../videos")
     parser.add_argument("--detection-method", choices=['diff', 'mog2'], default='mog2')
     parser.add_argument("--threshold", type=int, default=25)
@@ -170,6 +139,8 @@ def main():
                         help="Codec da câmera (ex: MJPG, YUYV, H264). Se não informado, usa o nativo.")
     parser.add_argument("--equipment-id", type=str, default=None,
                         help="ID do equipamento (ex: CAM01). Se não informado, usa '0000'.")
+    parser.add_argument("--debug-record", action="store_true",
+                        help="Grava um vídeo completo (debug) independente da detecção de movimento.")
 
     parser.set_defaults(**config)
     args = parser.parse_args(remaining_args)
@@ -206,7 +177,7 @@ def main():
         except ValueError:
             device = args.source_param
         raw_source = CameraSource(device, width=args.width, height=args.height,
-                                  fps=args.fps, codec=args.camera_codec)
+                                  codec=args.camera_codec)
     elif args.source_type == 'rtsp':
         raw_source = RTSPSource(args.source_param)
     elif args.source_type == 'dir':
@@ -232,50 +203,61 @@ def main():
         roi_polygons_normalized=roi_polygons
     )
 
-    # Determinação do FPS
-    if args.fps is not None:
-        final_fps = args.fps
-        logging.info(f"Usando FPS definido pelo usuário: {final_fps}")
+    # Determinação do FPS de gravação
+    if raw_source.is_live:
+        native_fps = None
+        if hasattr(source, 'get_fps'):
+            native_fps = source.get_fps()
+        if native_fps and native_fps > 0:
+            final_fps = native_fps
+            logging.info(f"FPS nativo da câmera: {final_fps:.2f}")
+        else:
+            final_fps = 20
+            logging.warning(f"FPS nativo não disponível, usando fallback: {final_fps}")
     else:
         native_fps = None
         if hasattr(source, 'get_fps'):
             native_fps = source.get_fps()
         if native_fps and native_fps > 0:
             final_fps = native_fps
-            logging.info(f"Usando FPS nativo da fonte: {final_fps:.2f}")
+            logging.info(f"FPS nativo do arquivo: {final_fps:.2f}")
         else:
             final_fps = 20
-            logging.warning(f"Não foi possível obter FPS nativo. Usando fallback: {final_fps}")
+            logging.warning(f"FPS nativo não disponível, usando fallback: {final_fps}")
 
-    if args.force_fps and args.fps is not None:
-        final_fps = args.fps
-        logging.info(f"Forçando FPS (--force-fps): {final_fps}")
-
-    # Medição de capacidade
-    if source.is_live and args.fps is not None and not args.force_fps:
-        logging.info("Medindo capacidade de processamento...")
-        measured_fps = measure_processing_fps(source, detector, num_frames=50, warmup_frames=10)
-        if measured_fps and measured_fps < final_fps:
-            logging.warning(
-                f"Hardware sustentou apenas {measured_fps:.2f} fps. "
-                f"Reduzindo FPS de gravação de {final_fps:.2f} para {measured_fps:.2f}."
-            )
-            final_fps = measured_fps
-        elif measured_fps:
-            logging.info(f"Hardware suporta o FPS desejado ({final_fps:.2f} fps).")
-
-    # Gravador (com equipment_id)
+    # Gravadores
     max_storage_bytes = args.max_storage_mb * 1024 * 1024 if args.max_storage_mb > 0 else None
+
+    # Recorder principal (clipes de movimento)
     recorder = Recorder(
         output_dir=args.output_dir,
         fps=final_fps,
         pre_record_seconds=args.pre_record,
         max_storage_bytes=max_storage_bytes,
         storage_policy=args.storage_policy,
-        equipment_id=equipment_id
+        equipment_id=equipment_id,
+        filename_prefix="clip"
     )
 
-    log_final_configuration(args, final_fps, roi_polygons)
+    # Recorder de debug (contínuo)
+    debug_recorder = None
+    if args.debug_record:
+        debug_recorder = Recorder(
+            output_dir=args.output_dir,
+            fps=final_fps,
+            pre_record_seconds=0,          # sem buffer para gravação contínua
+            max_storage_bytes=max_storage_bytes,
+            storage_policy=args.storage_policy,
+            equipment_id=equipment_id,
+            filename_prefix="debug"
+        )
+        logging.info("Gravação de vídeo completo (debug) ATIVADA.")
+
+    if uploader:
+        # Apenas o recorder principal terá callback de upload
+        recorder.on_video_finished = uploader.upload
+
+    log_final_configuration(args, final_fps, roi_polygons, args.debug_record)
 
     # Sinais
     stop_event = threading.Event()
@@ -290,6 +272,7 @@ def main():
         source=source,
         motion_detector=detector,
         recorder=recorder,
+        debug_recorder=debug_recorder,
         uploader=uploader,
         cooldown_sec=args.cooldown,
         min_motion_frames=args.min_motion_frames,
@@ -303,6 +286,8 @@ def main():
     finally:
         if recorder is not None and hasattr(recorder, 'shutdown'):
             recorder.shutdown()
+        if debug_recorder is not None and hasattr(debug_recorder, 'shutdown'):
+            debug_recorder.shutdown()
 
 if __name__ == "__main__":
     main()

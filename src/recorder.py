@@ -13,7 +13,7 @@ class Recorder:
     def __init__(self, output_dir='../videos', fps=20, codec='mp4v',
                  pre_record_seconds=2, max_queue_size=60,
                  max_storage_bytes=None, storage_policy='stop',
-                 equipment_id='0000'):
+                 equipment_id='0000', filename_prefix='clip'):
         self.output_dir = output_dir
         os.makedirs(output_dir, exist_ok=True)
         self.fps = fps
@@ -31,6 +31,7 @@ class Recorder:
         self._storage_exceeded = False
 
         self.equipment_id = equipment_id
+        self.filename_prefix = filename_prefix
 
         self._shutdown_sentinel = object()
         self._shutdown_started = False
@@ -42,7 +43,7 @@ class Recorder:
         self.lock = threading.Lock()
         self.end_timestamp = None
 
-        logger.info(f"Recorder inicializado: {output_dir}, pré-gravação={pre_record_seconds}s, id={equipment_id}")
+        logger.info(f"Recorder inicializado: {output_dir}, pré-gravação={pre_record_seconds}s, id={equipment_id}, prefixo={filename_prefix}")
         if self.max_storage_bytes:
             logger.info(f"Limite de armazenamento: {self.max_storage_bytes // (1024*1024)} MB, política: {storage_policy}")
 
@@ -110,8 +111,7 @@ class Recorder:
                     return False
                 self.recording = True
                 start_timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-                # Nome base inclui o ID do equipamento
-                self.filename = os.path.join(self.output_dir, f"clip_{start_timestamp}_{self.equipment_id}.mp4")
+                self.filename = os.path.join(self.output_dir, f"{self.filename_prefix}_{start_timestamp}_{self.equipment_id}.mp4")
                 self.end_timestamp = None
                 logger.debug(f"Iniciando gravação: {self.filename} (buffer: {len(self.frame_buffer)} frames)")
                 buffer_copy = list(self.frame_buffer)
@@ -152,9 +152,7 @@ class Recorder:
                     self.writer.release()
                     self.writer = None
                     if self.end_timestamp:
-                        # Nome original: clip_{start}_{id}.mp4
                         base, ext = os.path.splitext(self.filename)
-                        # Divide no último '_' para inserir o end timestamp antes do ID
                         parts = base.rsplit('_', 1)
                         if len(parts) == 2:
                             new_base = f"{parts[0]}_{self.end_timestamp}_{parts[1]}"
