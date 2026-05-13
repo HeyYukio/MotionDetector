@@ -21,7 +21,6 @@ class MotionRecorderApp:
         self.show_preview = show_preview
         self.roi_polygons_normalized = roi_polygons_normalized or []
 
-        # Estado da detecção
         self.motion_counter = 0
         self.no_motion_start = None
         self.recording = False
@@ -53,25 +52,22 @@ class MotionRecorderApp:
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
         cv2.putText(frame, f"Contador: {self.motion_counter}", (10, 90),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-        fps_text = f"FPS alvo: {self.recorder.fps:.1f}"
-        cv2.putText(frame, fps_text, (10, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+        cv2.putText(frame, f"FPS alvo: {self.recorder.fps:.1f}", (10, 120),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
         cv2.putText(frame, "Pressione 'q' para sair", (10, frame.shape[0] - 10),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (100, 100, 255), 1)
 
     def run(self):
-        logger.info("Iniciando monitoramento. Pressione Ctrl+C para parar.")
+        logger.info("Iniciando monitoramento. Ctrl+C para parar.")
         if self.show_preview:
-            logger.info("Modo preview ativado. Pressione 'q' na janela para sair.")
             cv2.namedWindow(self.preview_window_name, cv2.WINDOW_NORMAL)
 
         target_fps = self.recorder.fps
         if target_fps <= 0:
             target_fps = 20
-            logger.warning(f"FPS inválido, usando fallback {target_fps}")
+        is_live = getattr(self.source, 'is_live', False)
 
-        is_live_source = getattr(self.source, 'is_live', False)
-
-        if not is_live_source:
+        if not is_live:
             self._run_file_source(target_fps)
         else:
             self._run_live_source(target_fps)
@@ -84,19 +80,16 @@ class MotionRecorderApp:
         self.source.release()
         if self.show_preview:
             cv2.destroyAllWindows()
-        logger.info("Recursos liberados. Programa encerrado.")
+        logger.info("Recursos liberados.")
 
     def _run_live_source(self, target_fps):
         frame_interval = 1.0 / target_fps
-        logger.info(f"Thread de gravação: {target_fps:.2f} fps ({frame_interval*1000:.2f} ms)")
-        logger.info("Thread de detecção: melhor esforço")
-
+        logger.info(f"Gravação: {target_fps:.2f} fps ({frame_interval*1000:.2f} ms)")
         preview_lock = threading.Lock()
         latest_detection_frame = None
         latest_contours = []
         latest_motion_flag = False
 
-        # Inicia gravação debug imediatamente (contínua)
         if self.debug_recorder:
             self.debug_recorder.start_recording()
             logger.info("Gravação debug contínua iniciada.")
@@ -104,21 +97,17 @@ class MotionRecorderApp:
         def recording_worker():
             next_time = time.perf_counter()
             while not self.stop_event.is_set():
-                frame = self.source.get_frame()
+                frame, timestamp = self.source.get_frame()
                 if frame is None:
                     if not self.source.is_live:
-                        logger.info("Fim da fonte ao vivo, encerrando gravação.")
                         self.stop_event.set()
                         break
-                    self.stop_event.wait(0.05)
+                    time.sleep(0.05)
                     continue
 
-                # Adiciona frame ao recorder principal (gerencia buffer de movimento)
-                self.recorder.add_frame(frame)
-
-                # Adiciona frame ao debug recorder (sempre, independente de movimento)
+                self.recorder.add_frame(frame, timestamp)
                 if self.debug_recorder:
-                    self.debug_recorder.add_frame(frame)
+                    self.debug_recorder.add_frame(frame, timestamp)
 
                 next_time += frame_interval
                 sleep_time = next_time - time.perf_counter()
@@ -130,15 +119,14 @@ class MotionRecorderApp:
         def detection_worker():
             nonlocal latest_detection_frame, latest_contours, latest_motion_flag
             while not self.stop_event.is_set():
-                frame = self.source.get_frame()
+                frame, _ = self.source.get_frame()
                 if frame is None:
                     if not self.source.is_live:
                         break
-                    self.stop_event.wait(0.05)
+                    time.sleep(0.05)
                     continue
 
                 self._update_roi_absolute(frame.shape)
-
                 contours = self.detector.detect_with_contours(frame)
                 motion = len(contours) > 0
 
@@ -175,12 +163,11 @@ class MotionRecorderApp:
             while not self.stop_event.is_set():
                 with preview_lock:
                     if latest_detection_frame is not None:
-                        display_frame = latest_detection_frame.copy()
-                        self._draw_preview(display_frame, latest_motion_flag, latest_contours)
-                        cv2.imshow(self.preview_window_name, display_frame)
-                key = cv2.waitKey(1) & 0xFF
-                if key == ord('q'):
-                    logger.info("Comando 'q' recebido. Encerrando...")
+                        display = latest_detection_frame.copy()
+                        self._draw_preview(display, latest_motion_flag, latest_contours)
+                        cv2.imshow(self.preview_window_name, display)
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    logger.info("'q' pressionado, encerrando.")
                     self.stop_event.set()
                     break
         else:
@@ -188,45 +175,28 @@ class MotionRecorderApp:
             det_thread.join()
 
     def _run_file_source(self, target_fps):
-        source_fps = None
-        if hasattr(self.source, 'get_fps'):
-            source_fps = self.source.get_fps()
-        total_frames = None
-        if hasattr(self.source, 'get_frame_count'):
-            total_frames = self.source.get_frame_count()
-
+        source_fps = getattr(self.source, 'get_fps', lambda: None)()
+        total_frames = getattr(self.source, 'get_frame_count', lambda: None)()
         if source_fps and source_fps > 0:
             self.source_fps = source_fps
             self.ratio = target_fps / source_fps
             self.output_accum = 0.0
-            logger.info(
-                f"Fonte de arquivo com FPS nativo {source_fps:.2f}. "
-                f"Gravando a {target_fps:.2f} fps -> reamostrando (razão {self.ratio:.3f})."
-            )
-            if total_frames:
-                original_duration = total_frames / source_fps
-                output_frames = int(total_frames * self.ratio)
-                output_duration = output_frames / target_fps
-                logger.info(
-                    f"Vídeo original: {total_frames} frames, {original_duration:.2f}s. "
-                    f"Saída: ~{output_frames} frames, {output_duration:.2f}s."
-                )
+            logger.info(f"Arquivo: FPS nativo {source_fps:.2f}, reamostrando para {target_fps:.2f}")
         else:
             self.source_fps = None
-            logger.warning(
-                "Não foi possível obter o FPS nativo da fonte de arquivo. "
-                "Todos os frames serão processados sem reamostragem."
-            )
+            logger.warning("FPS nativo desconhecido, processando todos os frames.")
 
-        # Inicia gravação debug contínua se solicitado
         if self.debug_recorder:
             self.debug_recorder.start_recording()
 
         while not self.stop_event.is_set():
             frame = self.source.get_frame()
             if frame is None:
-                logger.info("Fim da fonte de arquivo. Encerrando...")
+                logger.info("Fim da fonte de arquivo.")
                 break
+
+            # Para arquivo, simulamos timestamp com time.time() (ou poderíamos usar um incremento)
+            timestamp = time.time()
 
             if self.show_preview:
                 self._update_roi_absolute(frame.shape)
@@ -261,18 +231,14 @@ class MotionRecorderApp:
 
             for _ in range(num_copies):
                 if self.recording:
-                    self.recorder.add_frame(frame)
-                # Debug recorder grava todos os frames, independentemente
+                    self.recorder.add_frame(frame, timestamp)
                 if self.debug_recorder:
-                    self.debug_recorder.add_frame(frame)
+                    self.debug_recorder.add_frame(frame, timestamp)
 
             if self.show_preview:
                 self._draw_preview(frame, motion, contours)
                 cv2.imshow(self.preview_window_name, frame)
-                key = cv2.waitKey(1) & 0xFF
-                if key == ord('q'):
-                    logger.info("Comando 'q' recebido. Encerrando...")
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    logger.info("'q' pressionado, encerrando.")
                     self.stop_event.set()
                     break
-
-        logger.info("Processamento de arquivo concluído.")

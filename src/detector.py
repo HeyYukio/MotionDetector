@@ -13,8 +13,7 @@ class MotionDetector:
         self.min_area = min_area
         self.blur_size = blur_size
         self.prev_gray = None
-
-        self.roi_polygons_normalized = roi_polygons_normalized if roi_polygons_normalized else []
+        self.roi_polygons_normalized = roi_polygons_normalized or []
         self.roi_polygons_absolute = []
         self.frame_shape = None
 
@@ -24,9 +23,6 @@ class MotionDetector:
             logger.info("Detector MOG2 inicializado")
         else:
             logger.info("Detector por diferença de frames inicializado")
-
-        if self.roi_polygons_normalized:
-            logger.info(f"Detector configurado com {len(self.roi_polygons_normalized)} ROIs")
 
     def _update_absolute_polygons(self, frame_shape):
         if self.frame_shape == frame_shape:
@@ -47,47 +43,35 @@ class MotionDetector:
         return False
 
     def detect(self, frame):
-        contours = self.detect_with_contours(frame)
-        return len(contours) > 0
+        return len(self.detect_with_contours(frame)) > 0
 
     def detect_with_contours(self, frame):
         if frame is None:
             return []
-
         self._update_absolute_polygons(frame.shape)
-
-        if self.method == 'mog2':
-            all_contours = self._detect_mog2_contours(frame)
-        else:
-            all_contours = self._detect_diff_contours(frame)
-
-        valid_contours = []
+        all_contours = self._detect_mog2_contours(frame) if self.method == 'mog2' else self._detect_diff_contours(frame)
+        valid = []
         for contour in all_contours:
             M = cv2.moments(contour)
             if M["m00"] != 0:
                 cx = int(M["m10"] / M["m00"])
                 cy = int(M["m01"] / M["m00"])
                 if self._point_in_rois((cx, cy)):
-                    valid_contours.append(contour)
-        return valid_contours
+                    valid.append(contour)
+        return valid
 
     def _detect_diff_contours(self, frame):
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         gray = cv2.GaussianBlur(gray, self.blur_size, 0)
-
         if self.prev_gray is None:
             self.prev_gray = gray
             return []
-
         diff = cv2.absdiff(self.prev_gray, gray)
         _, thresh = cv2.threshold(diff, self.threshold, 255, cv2.THRESH_BINARY)
         thresh = cv2.dilate(thresh, None, iterations=2)
         contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
         self.prev_gray = gray
-
-        valid_contours = [c for c in contours if cv2.contourArea(c) > self.min_area]
-        return valid_contours
+        return [c for c in contours if cv2.contourArea(c) > self.min_area]
 
     def _detect_mog2_contours(self, frame):
         fgmask = self.bg_subtractor.apply(frame)
@@ -96,6 +80,5 @@ class MotionDetector:
             fgmask = cv2.erode(fgmask, None, iterations=1)
             fgmask = cv2.dilate(fgmask, None, iterations=2)
             contours, _ = cv2.findContours(fgmask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            valid_contours = [c for c in contours if cv2.contourArea(c) > self.min_area]
-            return valid_contours
+            return [c for c in contours if cv2.contourArea(c) > self.min_area]
         return []

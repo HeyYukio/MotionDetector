@@ -16,13 +16,13 @@ class Uploader:
             try:
                 with open(filepath, 'rb') as f:
                     files = {self.field_name: (os.path.basename(filepath), f, 'video/mp4')}
-                    logger.info(f"Iniciando upload de {filepath} para {self.server_url}")
+                    logger.info(f"Enviando {filepath} para {self.server_url}")
                     response = requests.post(self.server_url, files=files, timeout=30)
                     if response.status_code in (200, 201):
-                        logger.info(f"Upload concluído: {filepath}")
+                        logger.info(f"Upload OK: {filepath}")
                         if self.remove_after_upload:
                             os.remove(filepath)
-                            logger.debug(f"Arquivo removido: {filepath}")
+                            logger.debug(f"Removido {filepath}")
                     else:
                         logger.error(f"Falha no upload: HTTP {response.status_code}")
             except Exception as e:

@@ -5,40 +5,29 @@ import sys
 import os
 
 # ------------------------------------------------------------
-# SUPRESSÃO DE MENSAGENS DO QT (DEVE VIR ANTES DE QUALQUER IMPORTAÇÃO DO OPENCV)
+# SUPRESSÃO DE MENSAGENS DO QT (ANTES DE QUALQUER IMPORTAÇÃO DO OPENCV)
 # ------------------------------------------------------------
-
 class FilteredStderr:
-    """Redireciona stderr, filtrando mensagens indesejadas."""
     def __init__(self, original_stderr, filter_strings):
         self.original_stderr = original_stderr
         self.filter_strings = filter_strings
-
     def write(self, message):
         if any(pattern in message for pattern in self.filter_strings):
             return
         self.original_stderr.write(message)
-
     def flush(self):
         self.original_stderr.flush()
-
     def __getattr__(self, attr):
         return getattr(self.original_stderr, attr)
 
 def suppress_qt_thread_warnings():
-    """Ativa o filtro de stderr para ignorar avisos de thread do Qt."""
-    filter_patterns = [
-        "QObject::moveToThread",
-        "Cannot move to target thread"
-    ]
+    filter_patterns = ["QObject::moveToThread", "Cannot move to target thread"]
     sys.stderr = FilteredStderr(sys.stderr, filter_patterns)
 
 suppress_qt_thread_warnings()
 os.environ["QT_LOGGING_RULES"] = "*.debug=false;*.warning=false"
 os.environ["QT_FATAL_WARNINGS"] = "0"
 
-# ------------------------------------------------------------
-# IMPORTAÇÕES DO PROJETO
 # ------------------------------------------------------------
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
 
@@ -56,50 +45,38 @@ from app import MotionRecorderApp
 from config import load_config, load_roi
 
 # ------------------------------------------------------------
-# CONFIGURAÇÃO DE LOGGING
-# ------------------------------------------------------------
 def setup_logging(debug=False):
     level = logging.DEBUG if debug else logging.INFO
-    logging.basicConfig(
-        level=level,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        handlers=[logging.StreamHandler()]
-    )
+    logging.basicConfig(level=level, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
-def log_final_configuration(args, final_fps, roi_polygons, debug_record):
+def log_final_configuration(args, final_fps, roi_polygons, debug_record, container_format):
     logging.info("=" * 60)
     logging.info("CONFIGURAÇÕES FINAIS DA EXECUÇÃO")
     logging.info("=" * 60)
     logging.info(f"Fonte: {args.source_type} -> {args.source_param}")
     if args.source_type == 'camera':
         logging.info(f"Resolução: {args.width}x{args.height}")
-        if args.camera_codec:
-            logging.info(f"Codec da câmera: {args.camera_codec}")
-        else:
-            logging.info("Codec da câmera: nativo")
+        logging.info(f"Codec da câmera: {args.camera_codec or 'nativo'}")
     logging.info(f"FPS de gravação: {final_fps:.2f}")
+    logging.info(f"Formato do vídeo: {container_format}")
     logging.info(f"Diretório de saída: {args.output_dir}")
     logging.info(f"Método de detecção: {args.detection_method}")
     logging.info(f"Threshold: {args.threshold} | Área mínima: {args.min_area}")
     logging.info(f"Pré-gravação: {args.pre_record}s | Cooldown: {args.cooldown}s")
-    logging.info(f"Frames mínimos para iniciar: {args.min_motion_frames}")
-    logging.info(f"ID do equipamento: {args.equipment_id if args.equipment_id else '0000'}")
+    logging.info(f"Frames mínimos: {args.min_motion_frames}")
+    logging.info(f"ID equipamento: {args.equipment_id or '0000'}")
     if args.max_storage_mb > 0:
-        logging.info(f"Limite de armazenamento: {args.max_storage_mb} MB | Política: {args.storage_policy}")
+        logging.info(f"Armazenamento máx: {args.max_storage_mb} MB | Política: {args.storage_policy}")
     else:
-        logging.info("Limite de armazenamento: desativado")
+        logging.info("Armazenamento: ilimitado")
     logging.info(f"Upload: {'Sim' if args.server_url and not args.no_upload else 'Não'}")
-    if args.server_url and not args.no_upload:
-        logging.info(f"  URL: {args.server_url} | Remover após upload: {args.remove_after_upload}")
     logging.info(f"Preview: {'Sim' if args.show_preview else 'Não'}")
     if roi_polygons:
-        logging.info(f"ROIs carregadas: {len(roi_polygons)} polígono(s)")
+        logging.info(f"ROIs: {len(roi_polygons)} polígono(s)")
     logging.info(f"Modo debug: {'Sim' if args.debug else 'Não'}")
-    logging.info(f"Gravação completa (debug): {'Sim' if debug_record else 'Não'}")
+    logging.info(f"Gravação contínua (debug): {'Sim' if debug_record else 'Não'}")
     logging.info("=" * 60)
 
-# ------------------------------------------------------------
-# FUNÇÃO PRINCIPAL
 # ------------------------------------------------------------
 def main():
     prelim_parser = argparse.ArgumentParser(add_help=False)
@@ -109,19 +86,17 @@ def main():
 
     config = load_config(prelim_args.config)
     config = {k: v for k, v in config.items() if v is not None}
-
     debug_mode = prelim_args.debug or config.get('debug', False)
     setup_logging(debug_mode)
-    logging.debug(f"Configurações carregadas do JSON: {pformat(config)}")
 
     parser = argparse.ArgumentParser(description="Sistema de gravação por detecção de movimento")
     parser.add_argument("--config", type=str, default="config.json")
-    parser.add_argument("--source-type", choices=['camera', 'rtsp', 'dir', 'video'], default='camera')
+    parser.add_argument("--source-type", choices=['camera','rtsp','dir','video'], default='camera')
     parser.add_argument("--source-param", type=str, default="0")
     parser.add_argument("--width", type=int, default=640)
     parser.add_argument("--height", type=int, default=480)
     parser.add_argument("--output-dir", type=str, default="../videos")
-    parser.add_argument("--detection-method", choices=['diff', 'mog2'], default='mog2')
+    parser.add_argument("--detection-method", choices=['diff','mog2'], default='mog2')
     parser.add_argument("--threshold", type=int, default=25)
     parser.add_argument("--min-area", type=int, default=500)
     parser.add_argument("--pre-record", type=float, default=2.0)
@@ -134,13 +109,12 @@ def main():
     parser.add_argument("--roi-json", type=str, default=None)
     parser.add_argument("--debug", action="store_true")
     parser.add_argument("--max-storage-mb", type=int, default=0)
-    parser.add_argument("--storage-policy", choices=['stop', 'delete_oldest'], default='stop')
-    parser.add_argument("--camera-codec", type=str, default=None,
-                        help="Codec da câmera (ex: MJPG, YUYV, H264). Se não informado, usa o nativo.")
-    parser.add_argument("--equipment-id", type=str, default=None,
-                        help="ID do equipamento (ex: CAM01). Se não informado, usa '0000'.")
-    parser.add_argument("--debug-record", action="store_true",
-                        help="Grava um vídeo completo (debug) independente da detecção de movimento.")
+    parser.add_argument("--storage-policy", choices=['stop','delete_oldest'], default='stop')
+    parser.add_argument("--camera-codec", type=str, default=None)
+    parser.add_argument("--equipment-id", type=str, default=None)
+    parser.add_argument("--debug-record", action="store_true")
+    parser.add_argument("--format", choices=['mp4','mkv'], default='mp4',
+                        help="Formato do vídeo de saída (padrão: mp4)")
 
     parser.set_defaults(**config)
     args = parser.parse_args(remaining_args)
@@ -149,17 +123,9 @@ def main():
         logging.getLogger().setLevel(logging.DEBUG)
     logging.debug(f"Argumentos finais: {pformat(vars(args))}")
 
-    # Define o ID do equipamento
-    equipment_id = args.equipment_id if args.equipment_id else "0000"
+    equipment_id = args.equipment_id or "0000"
+    roi_polygons = load_roi(args.roi_json) if args.roi_json else None
 
-    # ROIs
-    roi_polygons = None
-    if args.roi_json:
-        roi_polygons = load_roi(args.roi_json)
-        if roi_polygons:
-            logging.info(f"Carregadas {len(roi_polygons)} ROIs do arquivo {args.roi_json}")
-
-    # Uploader
     uploader = None
     if args.server_url and not args.no_upload:
         try:
@@ -169,15 +135,14 @@ def main():
             sys.exit(1)
         uploader = Uploader(args.server_url, remove_after_upload=args.remove_after_upload)
 
-    # Fonte de vídeo (bruta)
+    # Fonte bruta
     raw_source = None
     if args.source_type == 'camera':
         try:
             device = int(args.source_param)
         except ValueError:
             device = args.source_param
-        raw_source = CameraSource(device, width=args.width, height=args.height,
-                                  codec=args.camera_codec)
+        raw_source = CameraSource(device, width=args.width, height=args.height, codec=args.camera_codec)
     elif args.source_type == 'rtsp':
         raw_source = RTSPSource(args.source_param)
     elif args.source_type == 'dir':
@@ -190,103 +155,75 @@ def main():
 
     if raw_source.is_live:
         source = ThreadedFrameSource(raw_source, timeout_sec=2.0)
-        logging.info("ThreadedFrameSource ativado para fonte ao vivo")
+        logging.info("ThreadedFrameSource ativado")
     else:
         source = raw_source
-        logging.info("Usando fonte direta (sem thread) para arquivo/diretório")
+        logging.info("Fonte direta (sem thread)")
 
-    # Detector
-    detector = MotionDetector(
-        method=args.detection_method,
-        threshold=args.threshold,
-        min_area=args.min_area,
-        roi_polygons_normalized=roi_polygons
-    )
+    detector = MotionDetector(method=args.detection_method, threshold=args.threshold,
+                              min_area=args.min_area, roi_polygons_normalized=roi_polygons)
 
-    # Determinação do FPS de gravação
+    # FPS
     if raw_source.is_live:
-        native_fps = None
-        if hasattr(source, 'get_fps'):
-            native_fps = source.get_fps()
+        native_fps = getattr(source, 'get_fps', lambda: None)()
         if native_fps and native_fps > 0:
             final_fps = native_fps
-            logging.info(f"FPS nativo da câmera: {final_fps:.2f}")
         else:
             final_fps = 20
-            logging.warning(f"FPS nativo não disponível, usando fallback: {final_fps}")
+            logging.warning(f"FPS nativo não disponível, usando {final_fps}")
     else:
-        native_fps = None
-        if hasattr(source, 'get_fps'):
-            native_fps = source.get_fps()
-        if native_fps and native_fps > 0:
-            final_fps = native_fps
-            logging.info(f"FPS nativo do arquivo: {final_fps:.2f}")
-        else:
-            final_fps = 20
-            logging.warning(f"FPS nativo não disponível, usando fallback: {final_fps}")
+        native_fps = getattr(source, 'get_fps', lambda: None)()
+        final_fps = native_fps if (native_fps and native_fps > 0) else 20
 
-    # Gravadores
     max_storage_bytes = args.max_storage_mb * 1024 * 1024 if args.max_storage_mb > 0 else None
+    use_mkv = (args.format == 'mkv')
 
-    # Recorder principal (clipes de movimento)
-    recorder = Recorder(
-        output_dir=args.output_dir,
-        fps=final_fps,
-        pre_record_seconds=args.pre_record,
-        max_storage_bytes=max_storage_bytes,
-        storage_policy=args.storage_policy,
-        equipment_id=equipment_id,
-        filename_prefix="clip"
-    )
+    # Gravador principal (clipes de movimento)
+    recorder = Recorder(output_dir=args.output_dir, fps=final_fps,
+                        pre_record_seconds=args.pre_record,
+                        max_storage_bytes=max_storage_bytes,
+                        storage_policy=args.storage_policy,
+                        equipment_id=equipment_id,
+                        filename_prefix="clip",
+                        use_mkv=use_mkv)
 
-    # Recorder de debug (contínuo)
+    # Gravador debug contínuo
     debug_recorder = None
     if args.debug_record:
-        debug_recorder = Recorder(
-            output_dir=args.output_dir,
-            fps=final_fps,
-            pre_record_seconds=0,          # sem buffer para gravação contínua
-            max_storage_bytes=max_storage_bytes,
-            storage_policy=args.storage_policy,
-            equipment_id=equipment_id,
-            filename_prefix="debug"
-        )
-        logging.info("Gravação de vídeo completo (debug) ATIVADA.")
+        debug_recorder = Recorder(output_dir=args.output_dir, fps=final_fps,
+                                  pre_record_seconds=0,   # sem buffer
+                                  max_storage_bytes=max_storage_bytes,
+                                  storage_policy=args.storage_policy,
+                                  equipment_id=equipment_id,
+                                  filename_prefix="debug",
+                                  use_mkv=use_mkv)
+        logging.info("Gravação debug contínua ativada.")
 
     if uploader:
-        # Apenas o recorder principal terá callback de upload
         recorder.on_video_finished = uploader.upload
 
-    log_final_configuration(args, final_fps, roi_polygons, args.debug_record)
+    log_final_configuration(args, final_fps, roi_polygons, args.debug_record, args.format)
 
-    # Sinais
     stop_event = threading.Event()
     def signal_handler(signum, frame):
-        logging.info(f"Sinal {signum} recebido, encerrando...")
+        logging.info(f"Sinal {signum} recebido, encerrando.")
         stop_event.set()
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
-    # Aplicação
-    app = MotionRecorderApp(
-        source=source,
-        motion_detector=detector,
-        recorder=recorder,
-        debug_recorder=debug_recorder,
-        uploader=uploader,
-        cooldown_sec=args.cooldown,
-        min_motion_frames=args.min_motion_frames,
-        stop_event=stop_event,
-        show_preview=args.show_preview,
-        roi_polygons_normalized=roi_polygons
-    )
+    app = MotionRecorderApp(source=source, motion_detector=detector,
+                            recorder=recorder, debug_recorder=debug_recorder,
+                            uploader=uploader, cooldown_sec=args.cooldown,
+                            min_motion_frames=args.min_motion_frames,
+                            stop_event=stop_event, show_preview=args.show_preview,
+                            roi_polygons_normalized=roi_polygons)
 
     try:
         app.run()
     finally:
-        if recorder is not None and hasattr(recorder, 'shutdown'):
+        if recorder:
             recorder.shutdown()
-        if debug_recorder is not None and hasattr(debug_recorder, 'shutdown'):
+        if debug_recorder:
             debug_recorder.shutdown()
 
 if __name__ == "__main__":
