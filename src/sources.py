@@ -119,7 +119,8 @@ class VideoFileSource(FrameSource):
     def __init__(self, path):
         self.cap = cv2.VideoCapture(path)
         self.path = path
-        logger.info(f"VideoFileSource: {path} FPS={self.get_fps():.2f}" if self.get_fps() else f"VideoFileSource: {path}")
+        fps = self.get_fps()
+        logger.info(f"VideoFileSource: {path} @ {fps:.2f} fps" if fps else f"VideoFileSource: {path}")
 
     def get_frame(self):
         ret, frame = self.cap.read()

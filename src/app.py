@@ -136,6 +136,8 @@ class MotionRecorderApp:
                     if not self.recording and self.motion_counter >= self.min_motion_frames:
                         self.recording = True
                         self.recorder.start_recording()
+                        if self.debug_recorder:
+                            self.debug_recorder.start_recording()
                         logger.info("Movimento detectado - gravando")
                 else:
                     if self.recording:
@@ -144,6 +146,8 @@ class MotionRecorderApp:
                         elif time.time() - self.no_motion_start > self.cooldown:
                             self.recording = False
                             self.recorder.stop_recording()
+                            if self.debug_recorder:
+                                self.debug_recorder.stop_recording()
                             logger.info("Sem movimento - gravação encerrada")
                     else:
                         self.motion_counter = max(0, self.motion_counter - 1)
@@ -176,7 +180,6 @@ class MotionRecorderApp:
 
     def _run_file_source(self, target_fps):
         source_fps = getattr(self.source, 'get_fps', lambda: None)()
-        total_frames = getattr(self.source, 'get_frame_count', lambda: None)()
         if source_fps and source_fps > 0:
             self.source_fps = source_fps
             self.ratio = target_fps / source_fps
@@ -195,7 +198,6 @@ class MotionRecorderApp:
                 logger.info("Fim da fonte de arquivo.")
                 break
 
-            # Para arquivo, simulamos timestamp com time.time() (ou poderíamos usar um incremento)
             timestamp = time.time()
 
             if self.show_preview:
@@ -210,6 +212,8 @@ class MotionRecorderApp:
                 if not self.recording and self.motion_counter >= self.min_motion_frames:
                     self.recording = True
                     self.recorder.start_recording()
+                    if self.debug_recorder:
+                        self.debug_recorder.start_recording()
                     logger.info("Movimento detectado - gravando")
             else:
                 if self.recording:
@@ -218,6 +222,8 @@ class MotionRecorderApp:
                     elif time.time() - self.no_motion_start > self.cooldown:
                         self.recording = False
                         self.recorder.stop_recording()
+                        if self.debug_recorder:
+                            self.debug_recorder.stop_recording()
                         logger.info("Sem movimento - gravação encerrada")
                 else:
                     self.motion_counter = max(0, self.motion_counter - 1)

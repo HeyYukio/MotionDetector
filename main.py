@@ -166,11 +166,7 @@ def main():
     # FPS
     if raw_source.is_live:
         native_fps = getattr(source, 'get_fps', lambda: None)()
-        if native_fps and native_fps > 0:
-            final_fps = native_fps
-        else:
-            final_fps = 20
-            logging.warning(f"FPS nativo não disponível, usando {final_fps}")
+        final_fps = native_fps if (native_fps and native_fps > 0) else 20
     else:
         native_fps = getattr(source, 'get_fps', lambda: None)()
         final_fps = native_fps if (native_fps and native_fps > 0) else 20
@@ -185,22 +181,22 @@ def main():
                         storage_policy=args.storage_policy,
                         equipment_id=equipment_id,
                         filename_prefix="clip",
-                        use_mkv=use_mkv)
+                        use_mkv=use_mkv,
+                        protected=False)
+    if uploader:
+        recorder.set_uploader(uploader)
 
-    # Gravador debug contínuo
+    # Gravador debug contínuo (protegido)
     debug_recorder = None
     if args.debug_record:
         debug_recorder = Recorder(output_dir=args.output_dir, fps=final_fps,
-                                  pre_record_seconds=0,   # sem buffer
+                                  pre_record_seconds=0,
                                   max_storage_bytes=max_storage_bytes,
                                   storage_policy=args.storage_policy,
                                   equipment_id=equipment_id,
                                   filename_prefix="debug",
-                                  use_mkv=use_mkv)
-        logging.info("Gravação debug contínua ativada.")
-
-    if uploader:
-        recorder.on_video_finished = uploader.upload
+                                  use_mkv=use_mkv,
+                                  protected=True)
 
     log_final_configuration(args, final_fps, roi_polygons, args.debug_record, args.format)
 

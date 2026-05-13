@@ -14,18 +14,24 @@ class Uploader:
     def upload(self, filepath):
         def _upload():
             try:
-                with open(filepath, 'rb') as f:
-                    files = {self.field_name: (os.path.basename(filepath), f, 'video/mp4')}
-                    logger.info(f"Enviando {filepath} para {self.server_url}")
-                    response = requests.post(self.server_url, files=files, timeout=30)
-                    if response.status_code in (200, 201):
-                        logger.info(f"Upload OK: {filepath}")
-                        if self.remove_after_upload:
-                            os.remove(filepath)
-                            logger.debug(f"Removido {filepath}")
-                    else:
-                        logger.error(f"Falha no upload: HTTP {response.status_code}")
+                self.upload_sync(filepath)
             except Exception as e:
                 logger.exception(f"Erro no upload: {e}")
-
         threading.Thread(target=_upload, daemon=True).start()
+
+    def upload_sync(self, filepath):
+        """Retorna True se sucesso (HTTP 200/201), False caso contrário."""
+        try:
+            with open(filepath, 'rb') as f:
+                files = {self.field_name: (os.path.basename(filepath), f, 'video/mp4')}
+                logger.info(f"Iniciando upload de {filepath} para {self.server_url}")
+                response = requests.post(self.server_url, files=files, timeout=30)
+                if response.status_code in (200, 201):
+                    logger.info(f"Upload concluído: {filepath}")
+                    return True
+                else:
+                    logger.error(f"Falha no upload: HTTP {response.status_code}")
+                    return False
+        except Exception as e:
+            logger.exception(f"Erro no upload síncrono: {e}")
+            return False
