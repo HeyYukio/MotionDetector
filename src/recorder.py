@@ -12,7 +12,8 @@ logger = logging.getLogger(__name__)
 class Recorder:
     def __init__(self, output_dir='../videos', fps=20, codec='mp4v',
                  pre_record_seconds=2, max_queue_size=60,
-                 max_storage_bytes=None, storage_policy='stop'):
+                 max_storage_bytes=None, storage_policy='stop',
+                 equipment_id='0000'):
         self.output_dir = output_dir
         os.makedirs(output_dir, exist_ok=True)
         self.fps = fps
@@ -25,12 +26,12 @@ class Recorder:
         self.frame_buffer = collections.deque(maxlen=self.buffer_size)
         self.frame_queue = queue.Queue(maxsize=max_queue_size)
 
-        # Limite de armazenamento (bytes) e política
         self.max_storage_bytes = max_storage_bytes
         self.storage_policy = storage_policy
-        self._storage_exceeded = False  # Usado apenas na política 'stop'
+        self._storage_exceeded = False
 
-        # Sentinela para desligamento
+        self.equipment_id = equipment_id
+
         self._shutdown_sentinel = object()
         self._shutdown_started = False
 
@@ -41,12 +42,11 @@ class Recorder:
         self.lock = threading.Lock()
         self.end_timestamp = None
 
-        logger.info(f"Recorder inicializado: {output_dir}, pré-gravação={pre_record_seconds}s")
+        logger.info(f"Recorder inicializado: {output_dir}, pré-gravação={pre_record_seconds}s, id={equipment_id}")
         if self.max_storage_bytes:
             logger.info(f"Limite de armazenamento: {self.max_storage_bytes // (1024*1024)} MB, política: {storage_policy}")
 
     def _get_total_storage_used(self):
-        """Retorna o tamanho total (em bytes) de todos os vídeos .mp4 no diretório de saída."""
         pattern = os.path.join(self.output_dir, "*.mp4")
         files = glob.glob(pattern)
         total = 0
@@ -58,23 +58,17 @@ class Recorder:
         return total
 
     def _enforce_storage_policy(self):
-        """Aplica a política de armazenamento após um vídeo ser salvo."""
         if self.max_storage_bytes is None:
             return
-
         total = self._get_total_storage_used()
         if total <= self.max_storage_bytes:
-            # Se estava excedido e agora voltou ao normal, limpa flag
             if self._storage_exceeded:
                 self._storage_exceeded = False
                 logger.info("Uso de armazenamento voltou ao normal. Novas gravações permitidas.")
             return
-
         if self.storage_policy == 'delete_oldest':
-            # Apaga vídeos mais antigos até ficar abaixo do limite
             pattern = os.path.join(self.output_dir, "*.mp4")
             files = glob.glob(pattern)
-            # Ordena por data de modificação (mais antigo primeiro)
             files.sort(key=lambda f: os.path.getmtime(f))
             logger.warning(f"Limite de armazenamento excedido: {total/(1024*1024):.2f} MB > {self.max_storage_bytes/(1024*1024):.2f} MB. Deletando vídeos antigos...")
             while self._get_total_storage_used() > self.max_storage_bytes and files:
@@ -84,7 +78,6 @@ class Recorder:
                     logger.info(f"Removido vídeo antigo: {oldest}")
                 except OSError as e:
                     logger.error(f"Erro ao remover {oldest}: {e}")
-            # Após deleções, se ainda excedido (ex.: arquivo muito grande), loga
             if self._get_total_storage_used() > self.max_storage_bytes:
                 logger.error("Mesmo após deletar vídeos antigos, o limite ainda está excedido. Considere aumentar o limite ou verificar arquivos grandes.")
             else:
@@ -94,11 +87,9 @@ class Recorder:
             logger.error(f"Limite de armazenamento excedido: {total/(1024*1024):.2f} MB > {self.max_storage_bytes/(1024*1024):.2f} MB. Novas gravações serão bloqueadas até que espaço seja liberado.")
 
     def _check_storage_limit(self):
-        """Verifica se é permitido iniciar uma nova gravação com base no limite e política."""
         if self.max_storage_bytes is None:
             return True
         if self.storage_policy == 'delete_oldest':
-            # Sempre permite gravar, pois a limpeza será feita após cada vídeo
             return True
         elif self.storage_policy == 'stop':
             if self._storage_exceeded:
@@ -118,9 +109,9 @@ class Recorder:
                 if not self._check_storage_limit():
                     return False
                 self.recording = True
-                # Timestamp UTC para início da gravação
                 start_timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-                self.filename = os.path.join(self.output_dir, f"clip_{start_timestamp}.mp4")
+                # Nome base inclui o ID do equipamento
+                self.filename = os.path.join(self.output_dir, f"clip_{start_timestamp}_{self.equipment_id}.mp4")
                 self.end_timestamp = None
                 logger.debug(f"Iniciando gravação: {self.filename} (buffer: {len(self.frame_buffer)} frames)")
                 buffer_copy = list(self.frame_buffer)
@@ -142,13 +133,11 @@ class Recorder:
         with self.lock:
             if self.recording:
                 self.recording = False
-                # Timestamp UTC para fim da gravação
                 self.end_timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
                 logger.debug("Parando gravação")
                 self.frame_queue.put(None)
 
     def shutdown(self):
-        """Encerra a thread do gravador aguardando a conclusão de todas as operações."""
         if not self._shutdown_started:
             self._shutdown_started = True
             self.frame_queue.put(self._shutdown_sentinel)
@@ -163,8 +152,15 @@ class Recorder:
                     self.writer.release()
                     self.writer = None
                     if self.end_timestamp:
+                        # Nome original: clip_{start}_{id}.mp4
                         base, ext = os.path.splitext(self.filename)
-                        new_filename = f"{base}_{self.end_timestamp}{ext}"
+                        # Divide no último '_' para inserir o end timestamp antes do ID
+                        parts = base.rsplit('_', 1)
+                        if len(parts) == 2:
+                            new_base = f"{parts[0]}_{self.end_timestamp}_{parts[1]}"
+                        else:
+                            new_base = f"{base}_{self.end_timestamp}"
+                        new_filename = new_base + ext
                         try:
                             os.rename(self.filename, new_filename)
                             final_filename = new_filename
@@ -174,20 +170,15 @@ class Recorder:
                             final_filename = self.filename
                     else:
                         final_filename = self.filename
-
-                    # Aplica política de armazenamento após finalizar o vídeo
                     self._enforce_storage_policy()
-
                     if self.on_video_finished:
                         self.on_video_finished(final_filename)
                 continue
-
             elif item is self._shutdown_sentinel:
                 if self.writer:
                     self.writer.release()
                     self.writer = None
                 break
-
             else:
                 if self.writer:
                     self.writer.write(item)
