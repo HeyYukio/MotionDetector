@@ -139,8 +139,8 @@ class VideoFileSource(FrameSource):
 
 class ThreadedFrameSource(FrameSource):
     """
-    Wrapper que captura em thread separada e retorna
-    o frame mais recente + timestamp de captura (UTC).
+    Wrapper que executa a captura em uma thread separada e fornece
+    SEMPRE o frame mais recente + timestamp de captura (UTC).
     """
     def __init__(self, source, timeout_sec=2.0):
         self.source = source
@@ -156,13 +156,16 @@ class ThreadedFrameSource(FrameSource):
 
     def _capture_worker(self):
         while self.running:
-            frame = self.source.get_frame()
+            result = self.source.get_frame()
             now = time.time()
             with self.lock:
-                self.latest_frame = frame
-                self.latest_timestamp = now
-            if frame is None:
-                break
+                if isinstance(result, tuple):
+                    self.latest_frame, self.latest_timestamp = result
+                else:
+                    self.latest_frame = result
+                    self.latest_timestamp = now
+                if self.latest_frame is None:
+                    break
 
     def get_frame(self):
         with self.lock:
