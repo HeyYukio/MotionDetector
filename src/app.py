@@ -198,7 +198,7 @@ class MotionRecorderApp:
                 logger.info("Fim da fonte de arquivo.")
                 break
 
-            timestamp = time.time()   # timestamp artificial (UTC)
+            timestamp = time.time()
 
             if self.show_preview:
                 self._update_roi_absolute(frame.shape)

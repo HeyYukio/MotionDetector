@@ -6,6 +6,7 @@ import queue
 import collections
 import glob
 from datetime import datetime, timezone
+from fractions import Fraction
 import logging
 
 logger = logging.getLogger(__name__)
@@ -36,7 +37,7 @@ class Recorder:
         self.mkv_codec = mkv_codec
         self.pre_record_seconds = pre_record_seconds
         self.buffer_size = int(fps * pre_record_seconds)
-        self.frame_buffer = collections.deque(maxlen=self.buffer_size)  # (frame, timestamp)
+        self.frame_buffer = collections.deque(maxlen=self.buffer_size)
         self.frame_queue = queue.Queue(maxsize=max_queue_size)
 
         self.max_storage_bytes = max_storage_bytes
@@ -113,11 +114,11 @@ class Recorder:
             self.end_timestamp = None
             if self.use_mkv:
                 self.container = av.open(self.filename, 'w')
-                self.stream = self.container.add_stream(self.mkv_codec, rate=self.fps)
+                fps_fraction = Fraction(self.fps).limit_denominator()
+                self.stream = self.container.add_stream(self.mkv_codec, rate=fps_fraction)
                 self.stream.pix_fmt = 'yuv420p'
-                self.stream.width = None
-                self.stream.height = None
-                self.stream.time_base = av.time_base(1_000_000)
+                # width/height serão definidos automaticamente no primeiro frame
+                self.stream.time_base = Fraction(1, 1_000_000)  # 1 microssegundo
                 self._first_ts = None
             else:
                 self.writer = None
@@ -161,8 +162,7 @@ class Recorder:
                 if self.use_mkv:
                     self._finalize_mkv()
                 else:
-                    if self.writer:
-                        self.writer.release()
+                    self._finalize_mp4()
                 break
             else:
                 frame, ts = item
@@ -178,7 +178,7 @@ class Recorder:
             self.stream.height = h
         if self._first_ts is None:
             self._first_ts = ts
-        pts = int((ts - self._first_ts) * 1_000_000)
+        pts = int((ts - self._first_ts) * 1_000_000)  # microssegundos
         img = av.VideoFrame.from_ndarray(frame, format='bgr24')
         img.pts = pts
         for packet in self.stream.encode(img):
@@ -192,34 +192,38 @@ class Recorder:
         self.writer.write(frame)
 
     def _finalize_mkv(self):
-        if self.stream is not None:
+        if self.stream is not None:               # só finaliza se ainda não fechado
             for packet in self.stream.encode(None):
                 self.container.mux(packet)
             self.container.close()
             self.stream = None
             self.container = None
-        self._rename_and_handle()
+            self._rename_and_handle()
 
     def _finalize_mp4(self):
-        if self.writer:
+        if self.writer is not None:               # só finaliza se ainda não fechado
             self.writer.release()
             self.writer = None
-        self._rename_and_handle()
+            self._rename_and_handle()
 
     def _rename_and_handle(self):
         if self.end_timestamp and self.filename:
-            base, ext = os.path.splitext(self.filename)
-            parts = base.rsplit('_', 1)
-            if len(parts) == 2:
-                new_base = f"{parts[0]}_{self.end_timestamp}_{parts[1]}"
+            if os.path.exists(self.filename):
+                base, ext = os.path.splitext(self.filename)
+                parts = base.rsplit('_', 1)
+                if len(parts) == 2:
+                    new_base = f"{parts[0]}_{self.end_timestamp}_{parts[1]}"
+                else:
+                    new_base = f"{base}_{self.end_timestamp}"
+                new_filename = new_base + ext
+                try:
+                    os.rename(self.filename, new_filename)
+                    final_filename = new_filename
+                except OSError as e:
+                    logger.error(f"Erro ao renomear: {e}")
+                    final_filename = self.filename
             else:
-                new_base = f"{base}_{self.end_timestamp}"
-            new_filename = new_base + ext
-            try:
-                os.rename(self.filename, new_filename)
-                final_filename = new_filename
-            except OSError as e:
-                logger.error(f"Erro ao renomear: {e}")
+                logger.warning(f"Arquivo não encontrado para renomear: {self.filename}")
                 final_filename = self.filename
         else:
             final_filename = self.filename
