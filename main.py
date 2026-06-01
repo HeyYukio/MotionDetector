@@ -85,7 +85,7 @@ def main():
     prelim_args, remaining_args = prelim_parser.parse_known_args()
 
     config = load_config(prelim_args.config)
-    config = {k: v for k, v in config.items() if v is not None}
+    # Não removemos chaves com valor None – o config pode ter "width": null, "height": null
     debug_mode = prelim_args.debug or config.get('debug', False)
     setup_logging(debug_mode)
 
@@ -93,8 +93,9 @@ def main():
     parser.add_argument("--config", type=str, default="config.json")
     parser.add_argument("--source-type", choices=['camera','rtsp','dir','video'], default='camera')
     parser.add_argument("--source-param", type=str, default="0")
-    parser.add_argument("--width", type=int, default=640)
-    parser.add_argument("--height", type=int, default=480)
+    # ALTERADO: defaults None, para que width/height não forcem resolução
+    parser.add_argument("--width", type=int, default=None)
+    parser.add_argument("--height", type=int, default=None)
     parser.add_argument("--output-dir", type=str, default="../videos")
     parser.add_argument("--detection-method", choices=['diff','mog2'], default='mog2')
     parser.add_argument("--threshold", type=int, default=25)
@@ -116,6 +117,7 @@ def main():
     parser.add_argument("--format", choices=['mp4','mkv'], default='mp4',
                         help="Formato do vídeo de saída (padrão: mp4)")
 
+    # Aplica as configurações do arquivo (incluindo None) como defaults
     parser.set_defaults(**config)
     args = parser.parse_args(remaining_args)
 
@@ -142,7 +144,15 @@ def main():
             device = int(args.source_param)
         except ValueError:
             device = args.source_param
-        raw_source = CameraSource(device, width=args.width, height=args.height, codec=args.camera_codec)
+        # Só passa width/height se não forem None
+        cam_kwargs = {}
+        if args.camera_codec:
+            cam_kwargs['codec'] = args.camera_codec
+        if args.width is not None:
+            cam_kwargs['width'] = args.width
+        if args.height is not None:
+            cam_kwargs['height'] = args.height
+        raw_source = CameraSource(device, **cam_kwargs)
     elif args.source_type == 'rtsp':
         raw_source = RTSPSource(args.source_param)
     elif args.source_type == 'dir':
@@ -164,11 +174,11 @@ def main():
                               min_area=args.min_area, roi_polygons_normalized=roi_polygons)
 
     # FPS
+    native_fps = getattr(source, 'get_fps', lambda: None)()
     if raw_source.is_live:
-        native_fps = getattr(source, 'get_fps', lambda: None)()
         final_fps = native_fps if (native_fps and native_fps > 0) else 20
     else:
-        native_fps = getattr(source, 'get_fps', lambda: None)()
+        # Para arquivos, usa o FPS nativo; se inválido, default 20
         final_fps = native_fps if (native_fps and native_fps > 0) else 20
 
     max_storage_bytes = args.max_storage_mb * 1024 * 1024 if args.max_storage_mb > 0 else None

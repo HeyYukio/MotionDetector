@@ -179,18 +179,25 @@ class MotionRecorderApp:
             det_thread.join()
 
     def _run_file_source(self, target_fps):
-        source_fps = getattr(self.source, 'get_fps', lambda: None)()
-        if source_fps and source_fps > 0:
-            self.source_fps = source_fps
+        # Obtém FPS da fonte e valida
+        raw_source_fps = getattr(self.source, 'get_fps', lambda: None)()
+        if raw_source_fps and 0.5 <= raw_source_fps <= 120:
+            source_fps = raw_source_fps
             self.ratio = target_fps / source_fps
             self.output_accum = 0.0
             logger.info(f"Arquivo: FPS nativo {source_fps:.2f}, reamostrando para {target_fps:.2f}")
         else:
-            self.source_fps = None
-            logger.warning("FPS nativo desconhecido, processando todos os frames.")
+            source_fps = None
+            if raw_source_fps:
+                logger.warning(f"FPS da fonte inválido ({raw_source_fps}), ignorando reamostragem")
+            else:
+                logger.warning("FPS nativo desconhecido, processando todos os frames.")
 
         if self.debug_recorder:
             self.debug_recorder.start_recording()
+
+        frame_count_out = 0
+        first_frame_logged = False
 
         while not self.stop_event.is_set():
             frame = self.source.get_frame()
@@ -198,7 +205,10 @@ class MotionRecorderApp:
                 logger.info("Fim da fonte de arquivo.")
                 break
 
-            timestamp = time.time()
+            # Diagnóstico de resolução (apenas uma vez)
+            if not first_frame_logged:
+                logger.info(f"Resolução do primeiro frame: {frame.shape[1]}x{frame.shape[0]}")
+                first_frame_logged = True
 
             if self.show_preview:
                 self._update_roi_absolute(frame.shape)
@@ -206,6 +216,7 @@ class MotionRecorderApp:
             contours = self.detector.detect_with_contours(frame)
             motion = len(contours) > 0
 
+            # Lógica de início/fim de gravação
             if motion:
                 self.motion_counter += 1
                 self.no_motion_start = None
@@ -228,18 +239,20 @@ class MotionRecorderApp:
                 else:
                     self.motion_counter = max(0, self.motion_counter - 1)
 
-            if self.source_fps is not None:
+            # Reamostragem com timestamps sintéticos
+            if source_fps is not None:
                 self.output_accum += self.ratio
                 num_copies = int(self.output_accum)
                 self.output_accum -= num_copies
             else:
                 num_copies = 1
 
-            for _ in range(num_copies):
-                if self.recording:
-                    self.recorder.add_frame(frame, timestamp)
+            for i in range(num_copies):
+                synthetic_ts = frame_count_out / target_fps
+                frame_count_out += 1
+                self.recorder.add_frame(frame, synthetic_ts)
                 if self.debug_recorder:
-                    self.debug_recorder.add_frame(frame, timestamp)
+                    self.debug_recorder.add_frame(frame, synthetic_ts)
 
             if self.show_preview:
                 self._draw_preview(frame, motion, contours)

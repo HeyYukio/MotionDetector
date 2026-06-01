@@ -62,6 +62,8 @@ class Recorder:
         self.container = None
         self.stream = None
         self._first_ts = None
+        self._filename = None
+        self._dimensions_set = False   # nova flag
 
         ext = "mkv" if self.use_mkv else "mp4"
         logger.info(f"Recorder inicializado: {output_dir}, prefixo={filename_prefix}, formato={ext}, "
@@ -109,23 +111,23 @@ class Recorder:
             self.recording = True
             start_ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
             ext = "mkv" if self.use_mkv else "mp4"
-            self.filename = os.path.join(self.output_dir,
+            self._filename = os.path.join(self.output_dir,
                 f"{self.filename_prefix}_{start_ts}_{self.equipment_id}.{ext}")
             self.end_timestamp = None
             if self.use_mkv:
-                self.container = av.open(self.filename, 'w')
+                self.container = av.open(self._filename, 'w')
                 fps_fraction = Fraction(self.fps).limit_denominator()
                 self.stream = self.container.add_stream(self.mkv_codec, rate=fps_fraction)
                 self.stream.pix_fmt = 'yuv420p'
-                # width/height serão definidos automaticamente no primeiro frame
-                self.stream.time_base = Fraction(1, 1_000_000)  # 1 microssegundo
                 self._first_ts = None
+                self._dimensions_set = False  # reseta a cada nova gravação
             else:
                 self.writer = None
+
             buffer_copy = list(self.frame_buffer)
             for item in buffer_copy:
                 self.frame_queue.put(item)
-            logger.debug(f"Iniciando gravação: {self.filename}")
+            logger.debug(f"Iniciando gravação: {self._filename}")
             return True
 
     def add_frame(self, frame, timestamp=None):
@@ -172,15 +174,39 @@ class Recorder:
                     self._write_frame_mp4(frame)
 
     def _write_frame_mkv(self, frame, ts):
-        if self.stream.width is None:
+        logger.debug(f"Frame recebido para MKV: {frame.shape[1]}x{frame.shape[0]}")
+
+        h, w = frame.shape[:2]
+        pad_bottom = 0
+        pad_right = 0
+
+        # Padding apenas se necessário (exigência do YUV420p)
+        if h % 2 != 0:
+            pad_bottom = 1
+        if w % 2 != 0:
+            pad_right = 1
+
+        if pad_bottom or pad_right:
+            frame = cv2.copyMakeBorder(frame, 0, pad_bottom, 0, pad_right,
+                                       cv2.BORDER_CONSTANT, value=[0, 0, 0])
             h, w = frame.shape[:2]
+
+        frame_yuv = cv2.cvtColor(frame, cv2.COLOR_BGR2YUV_I420)
+        img = av.VideoFrame.from_ndarray(frame_yuv, format='yuv420p')
+
+        # Força a definição das dimensões no primeiro frame, independentemente do valor padrão
+        if not self._dimensions_set:
             self.stream.width = w
             self.stream.height = h
+            self._dimensions_set = True
+            logger.info(f"Stream MKV definido: {w}x{h} (resolução do primeiro frame)")
+
         if self._first_ts is None:
             self._first_ts = ts
-        pts = int((ts - self._first_ts) * 1_000_000)  # microssegundos
-        img = av.VideoFrame.from_ndarray(frame, format='bgr24')
+
+        pts = int(round((ts - self._first_ts) * self.fps))
         img.pts = pts
+
         for packet in self.stream.encode(img):
             self.container.mux(packet)
 
@@ -188,11 +214,12 @@ class Recorder:
         if self.writer is None:
             h, w = frame.shape[:2]
             fourcc = cv2.VideoWriter_fourcc(*self.codec)
-            self.writer = cv2.VideoWriter(self.filename, fourcc, self.fps, (w, h))
+            self.writer = cv2.VideoWriter(self._filename, fourcc, self.fps, (w, h))
+            logger.info(f"VideoWriter MP4 definido: {w}x{h}")
         self.writer.write(frame)
 
     def _finalize_mkv(self):
-        if self.stream is not None:               # só finaliza se ainda não fechado
+        if self.stream is not None:
             for packet in self.stream.encode(None):
                 self.container.mux(packet)
             self.container.close()
@@ -201,15 +228,19 @@ class Recorder:
             self._rename_and_handle()
 
     def _finalize_mp4(self):
-        if self.writer is not None:               # só finaliza se ainda não fechado
+        if self.writer is not None:
             self.writer.release()
             self.writer = None
             self._rename_and_handle()
 
     def _rename_and_handle(self):
-        if self.end_timestamp and self.filename:
-            if os.path.exists(self.filename):
-                base, ext = os.path.splitext(self.filename)
+        filename = getattr(self, '_filename', None)
+        if not filename:
+            return
+
+        if self.end_timestamp:
+            if os.path.exists(filename):
+                base, ext = os.path.splitext(filename)
                 parts = base.rsplit('_', 1)
                 if len(parts) == 2:
                     new_base = f"{parts[0]}_{self.end_timestamp}_{parts[1]}"
@@ -217,16 +248,16 @@ class Recorder:
                     new_base = f"{base}_{self.end_timestamp}"
                 new_filename = new_base + ext
                 try:
-                    os.rename(self.filename, new_filename)
+                    os.rename(filename, new_filename)
                     final_filename = new_filename
                 except OSError as e:
                     logger.error(f"Erro ao renomear: {e}")
-                    final_filename = self.filename
+                    final_filename = filename
             else:
-                logger.warning(f"Arquivo não encontrado para renomear: {self.filename}")
-                final_filename = self.filename
+                logger.warning(f"Arquivo não encontrado para renomear: {filename}")
+                final_filename = filename
         else:
-            final_filename = self.filename
+            final_filename = filename
 
         logger.debug(f"Vídeo finalizado: {final_filename}")
         self._handle_finished_file(final_filename)
